@@ -1,0 +1,44 @@
+MathPDF is a clean, elegant PDF reader for Apple platforms, inspired by the simplicity of Preview, but purpose-built for people who write math in annotations.
+Core idea:
+All notes/comments remain plain text in the PDF, but whenever a note contains math notation (such as $...$,
+.
+.
+.
+..., 
+.
+.
+.
+..., or 
+.
+.
+.
+...), the app displays it as properly rendered math for reading comfort. The stored data stays plain-text and PDF-compatible.
+
+Product experience:
+You open a PDF and get a polished document view with a sidebar that has two tabs:
+
+Table of Contents (document outline)
+Notes (all annotation notes across the document)
+Annotation behavior:
+Works with highlights that have attached notes.
+Works with box-style note annotations.
+Clicking a note icon/box opens a popover for that note.
+Notes selected from the sidebar also open in context.
+Math behavior:
+Supports common MathJax-style delimiters and broadly compatible math syntax.
+Rendering should be forgiving and user-friendly.
+If math parsing has issues, the app should fail gracefully (show readable raw text) without noisy error spam.
+Editing behavior:
+Live preview while typing is not required.
+Notes are editable as plain text.
+The app should allow creating and editing note annotations naturally as part of the reading workflow.
+Per-document preamble/macros:
+Each PDF can have its own math preamble (macro definitions, aliases, etc.).
+This is a per-PDF setting, not a per-user global preference.
+Users can view/edit this preamble from a PDF inspector-style view.
+The preamble should travel with the PDF via metadata so another compatible viewer can read it.
+Compatibility intent:
+Keep annotation content and note storage interoperable with normal PDF tools.
+The app adds better rendering and UX, not a proprietary note format.
+Design intent:
+A minimal, tasteful, “just works” reader that feels native and uncluttered, while giving technical users first-class math note readability.
