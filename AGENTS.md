@@ -112,10 +112,44 @@ Current project facts confirmed locally:
 Use a small trustworthy validation loop after each change. Run the narrowest command that proves the touched contract, then expand to broader builds later.
 
 - Pure logic or parser work: run the smallest relevant unit test target or focused `xcodebuild test` invocation.
-- View-only edits that do not affect build settings: run a build first, then broaden if needed.
+- View-only edits that do not affect build settings: run a build first, then launch the app and exercise the changed UI path manually.
 - Project or integration changes: run a full scheme build, then tests if the build passes.
+- User-visible workflow changes: pair the narrowest automated check available with a manual product check that demonstrates the actual reading or annotation behavior.
 
 If the environment cannot run UI tests, simulator-backed tooling, or launch automation, still run the most relevant build or unit-test command available and record the limitation explicitly, including the exact scheme, simulator or lack of simulator, and checks used.
+
+## Product Validation
+
+Building is necessary but not sufficient. For MathPDF, validation should prove user-visible reader behavior whenever a change affects product flow.
+
+Minimum expectations by change type:
+
+- PDF loading or reader-shell changes: launch the app, open a representative PDF, and verify the document window appears and remains usable.
+- Sidebar changes: verify `Table of Contents` and `Notes` are present when expected, can be selected, and reflect the active document state.
+- Annotation discovery or note-list changes: verify notes appear in the sidebar, selecting a note reveals it in context, and both highlight-attached notes and box-style notes still behave correctly when relevant.
+- Note editing changes: verify note text remains editable as plain text and persists through the intended save path for the current slice.
+- Math rendering changes: verify supported math-like note text renders more readably, and invalid or unsupported math falls back to readable raw text without noisy failure UI.
+- Preamble or metadata changes: verify per-document scope, verify the inspector-style editing path, and verify the document still round-trips as a normal PDF rather than a proprietary note format.
+
+When practical, keep or create a small set of representative sample PDFs for manual and automated checks:
+
+- a PDF with no notes
+- a PDF with highlight-attached notes
+- a PDF with box-style note annotations
+- a PDF with valid math markup
+- a PDF with intentionally broken math markup to verify fallback behavior
+
+If sample files do not exist yet, say so explicitly in the plan or final report and describe the substitute validation used.
+
+Use UI tests for stable, repeatable workflows once the UI exists, especially:
+
+- launching the app into a known document state
+- opening a PDF
+- toggling or selecting sidebar views
+- selecting a note and confirming context reveal
+- editing a note through the intended UI flow
+
+For early feature work, manual product validation is acceptable if the UI is still in flux, but do not stop at “build succeeded” when the change is user-visible.
 
 ## Documentation Rules
 
