@@ -27,6 +27,6 @@ Statuses:
 
 | Feature | Plan | Status | Related Plans | Notes |
 | --- | --- | --- | --- | --- |
-| MVP reader and math note rendering | [docs/plans/mvp_reader_math_notes_plan.md](./mvp_reader_math_notes_plan.md) | active | none yet | First real product slice. Covers PDF opening, note extraction, math-reading presentation, and fixture-driven validation around `pdfs for testing/ell_curves.pdf`. |
+| MVP reader and math note rendering | [docs/plans/mvp_reader_math_notes_plan.md](./mvp_reader_math_notes_plan.md) | completed | none yet | First real product slice. Covers PDF opening, note extraction, math-reading presentation, and fixture-driven validation around `pdfs for testing/ell_curves.pdf`. |
 
 Revision note: moved under `docs/plans/` so the index now lives beside the plans it tracks and the top-level `docs/` directory stays organized.

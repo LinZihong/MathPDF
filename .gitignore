@@ -1,5 +1,6 @@
 .DS_Store
 .build/
+.swift-module-cache/
 pdfs for testing/
 
 # Xcode user-local state

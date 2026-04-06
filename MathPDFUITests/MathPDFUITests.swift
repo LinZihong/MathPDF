@@ -8,34 +8,59 @@
 import XCTest
 
 final class MathPDFUITests: XCTestCase {
+    private var app: XCUIApplication!
+    private var fixturePath: String {
+        URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .appendingPathComponent("pdfs for testing/ell_curves.pdf")
+            .path
+    }
 
     override func setUpWithError() throws {
-        // Put setup code here. This method is called before the invocation of each test method in the class.
-
-        // In UI tests it is usually best to stop immediately when a failure occurs.
         continueAfterFailure = false
-
-        // In UI tests it’s important to set the initial state - such as interface orientation - required for your tests before they run. The setUp method is a good place to do this.
+        app = XCUIApplication()
     }
 
     override func tearDownWithError() throws {
-        // Put teardown code here. This method is called after the invocation of each test method in the class.
+        if app?.state == .runningForeground || app?.state == .runningBackground {
+            app.terminate()
+        }
+        app = nil
     }
 
     @MainActor
-    func testExample() throws {
-        // UI tests must launch the application that they test.
-        let app = XCUIApplication()
+    func testLaunchesFixtureAndShowsRenderedNote() throws {
+        app.launchEnvironment["MATHPDF_OPEN_DOCUMENT"] = fixturePath
         app.launch()
 
-        // Use XCTAssert and related functions to verify your tests produce the correct results.
+        XCTAssertEqual(app.state, .runningForeground)
+
+        let noteRow = app.staticTexts.containing(NSPredicate(format: "label CONTAINS %@", "This is a test comment")).firstMatch
+        XCTAssertTrue(noteRow.waitForExistence(timeout: 10))
+        noteRow.click()
+
+        let renderedTitle = app.staticTexts["rendered-note-title"]
+        XCTAssertTrue(renderedTitle.waitForExistence(timeout: 5))
+
+        let metadata = app.staticTexts["rendered-note-metadata"]
+        XCTAssertTrue(metadata.exists)
+        XCTAssertTrue(metadata.label.contains("Page 1"))
+
+        let rawText = app.staticTexts["raw-note-content"]
+        XCTAssertTrue(rawText.exists)
+        XCTAssertTrue(rawText.label.contains("$a$"))
+        XCTAssertTrue(rawText.label.contains("\\[ a^n + b^n = c^n \\]"))
+
+        let renderedContent = app.otherElements["rendered-note-content"]
+        XCTAssertTrue(renderedContent.exists)
     }
 
     @MainActor
     func testLaunchPerformance() throws {
-        // This measures how long it takes to launch your application.
         measure(metrics: [XCTApplicationLaunchMetric()]) {
-            XCUIApplication().launch()
+            app.launch()
+            app.terminate()
         }
     }
 }
