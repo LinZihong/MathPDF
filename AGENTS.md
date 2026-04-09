@@ -103,103 +103,48 @@ Use real commands that match this repo:
 - Test: `xcodebuild -project MathPDF.xcodeproj -scheme MathPDF -derivedDataPath .build/SignedDerivedData test`
 - Build and launch helper: `scripts/build-and-launch.sh`
 
-Signed builds are the default validation path for this repo because the shipping `WKWebView` renderer behavior depends on sandbox entitlements:
+Validation defaults:
 
-- `scripts/build-and-launch.sh --signed` builds into `.build/SignedDerivedData` with the project's normal signing settings. Use this for normal builds, tests, launches, and manual product validation.
-- `scripts/build-and-launch.sh --unsigned` builds into `.build/DerivedData` with `CODE_SIGNING_ALLOWED=NO`. Use this only for narrow debugging experiments when a task explicitly needs an unsigned comparison.
-- Add `--build-only` to either mode when you need to inspect the built `.app` or launch it manually.
+- Use signed builds by default for builds, tests, launches, and manual validation.
+- Use `scripts/build-and-launch.sh --signed` for normal app validation.
+- Use `scripts/build-and-launch.sh --unsigned` only for narrow debugging experiments that explicitly need an unsigned comparison.
+- Add `--build-only` when you need to inspect the built `.app` or launch it manually.
 - The signed app target must keep `ENABLE_OUTGOING_NETWORK_CONNECTIONS = YES`. Without the resulting `com.apple.security.network.client` entitlement, the sandboxed `WKWebView` renderer crashes its `WebContent` and `Networking` helper processes even for local `loadHTMLString` note content.
 - Do not reintroduce a persistent `CODE_SIGNING_ALLOWED = NO` Xcode build-setting override just to get an unsigned build; that contaminates plain `xcodebuild` products and obscures signed-versus-unsigned comparisons.
 
-Current project facts confirmed locally:
+Use a small trustworthy loop after each change. Run the narrowest command that proves the touched contract, then expand only as needed:
 
-- Scheme: `MathPDF`
-- Targets: `MathPDF`, `MathPDFTests`, `MathPDFUITests`
-- Platform: macOS (`SDKROOT = macosx`)
-- Current treatment: existing-project change
-- Simulator used: none, because the current checked-in target is macOS rather than iOS
-
-Use a small trustworthy validation loop after each change. Run the narrowest command that proves the touched contract, then expand to broader builds later.
-
-- Pure logic or parser work: run the smallest relevant unit test target or focused `xcodebuild test` invocation.
-- View-only edits that do not affect build settings: run a build first, then launch the app and exercise the changed UI path manually.
-- Project or integration changes: run a full scheme build, then tests if the build passes.
-- User-visible workflow changes: pair the narrowest automated check available with a manual product check that demonstrates the actual reading or annotation behavior.
-
-When working on tests, keep the workflow disciplined:
-
-- For unit-test iteration, prefer focused signed invocations such as `xcodebuild -project MathPDF.xcodeproj -scheme MathPDF -derivedDataPath .build/SignedDerivedData -only-testing:MathPDFTests test`.
+- Pure logic work: run the smallest relevant signed unit-test invocation, for example `xcodebuild -project MathPDF.xcodeproj -scheme MathPDF -derivedDataPath .build/SignedDerivedData -only-testing:MathPDFTests test`.
+- View-only edits: build first, then launch the signed app and exercise the changed UI path manually.
+- Project or integration changes: run a full signed scheme build, then tests if the build passes.
+- User-visible workflow changes: pair the narrowest automated check with a manual product check in the running signed app.
 - For UI-test iteration, first prove the target compiles with `build-for-testing` before running the test bundle.
 - Do not leave template placeholder tests in place once a target gains real workflow coverage. Remove them or replace them with meaningful checks.
-
-If the environment cannot run UI tests, simulator-backed tooling, or launch automation, still run the most relevant build or unit-test command available and record the limitation explicitly, including the exact scheme, simulator or lack of simulator, and checks used.
 
 ## Product Validation
 
 Building is necessary but not sufficient. For MathPDF, validation should prove user-visible reader behavior whenever a change affects product flow.
 
-Minimum expectations by change type:
+- Use `pdfs for testing/ell_curves.pdf` as the default manual validation fixture unless a task needs a different sample.
+- For reader-shell and PDF-loading changes, prove the PDF opens and the document window stays usable.
+- For sidebar and note-discovery changes, prove `Table of Contents` and `Notes` behave correctly and selecting a note reveals it in context.
+- For note-editing changes, prove note text stays plain text and persists through the intended save path.
+- For math-rendering changes, prove valid math becomes more readable and broken math falls back to readable raw text.
+- For metadata or preamble changes, prove document scope and PDF round-tripping remain intact.
 
-- PDF loading or reader-shell changes: launch the app, open a representative PDF, and verify the document window appears and remains usable.
-- Sidebar changes: verify `Table of Contents` and `Notes` are present when expected, can be selected, and reflect the active document state.
-- Annotation discovery or note-list changes: verify notes appear in the sidebar, selecting a note reveals it in context, and both highlight-attached notes and box-style notes still behave correctly when relevant.
-- Note editing changes: verify note text remains editable as plain text and persists through the intended save path for the current slice.
-- Math rendering changes: verify supported math-like note text renders more readably, and invalid or unsupported math falls back to readable raw text without noisy failure UI.
-- Preamble or metadata changes: verify per-document scope, verify the inspector-style editing path, and verify the document still round-trips as a normal PDF rather than a proprietary note format.
+Standard manual loop for user-visible changes:
 
-When practical, keep or create a small set of representative sample PDFs for manual and automated checks:
+- Launch the signed app with a representative PDF, usually `scripts/build-and-launch.sh --signed "pdfs for testing/ell_curves.pdf"`.
+- Exercise the changed workflow in the running app.
+- Capture a screenshot of the app window with the macOS window-capture skill, for example `/Users/linzihong/.codex/skills/macos-window-capture/scripts/capture_app_window.sh --app "MathPDF" --output /tmp/mathpdf-debug/validation.png`.
+- Inspect the screenshot before reporting success.
 
-- a PDF with no notes
-- a PDF with highlight-attached notes
-- a PDF with box-style note annotations
-- a PDF with valid math markup
-- a PDF with intentionally broken math markup to verify fallback behavior
+UI test rules:
 
-If sample files do not exist yet, say so explicitly in the plan or final report and describe the substitute validation used.
-
-For the first MVP that opens PDFs and renders existing math-bearing comments, use `pdfs for testing/ell_curves.pdf` as the default validation fixture. It currently contains a real highlight note with inline `$...$` math and a display `\[ ... \]` equation. Manual validation for that slice should prove all of the following:
-
-- the app opens `pdfs for testing/ell_curves.pdf`
-- the PDF remains readable in the main document view
-- the note list shows one user note rather than a duplicate popup companion
-- selecting that note reveals it in context
-- the note inspector renders the math more readably while still exposing the stored plain text
-
-When using launch automation for that fixture, prefer the signed helper path:
-
-- `scripts/build-and-launch.sh --signed "pdfs for testing/ell_curves.pdf"`
-
-Correctly opening a test PDF and capturing a screenshot of the resulting app window is standard evidence for manual validation of user-visible changes. Use the macOS window-capture skill workflow with a deterministic `/tmp` path, for example:
-
-- `/Users/linzihong/.codex/skills/macos-window-capture/scripts/capture_app_window.sh --app "MathPDF" --output /tmp/mathpdf-debug/ell-curves-validation.png`
-
-If the screenshot is part of the validation record, inspect it before reporting success.
-
-Use UI tests for stable, repeatable workflows once the UI exists, especially:
-
-- launching the app into a known document state
-- opening a PDF
-- toggling or selecting sidebar views
-- selecting a note and confirming context reveal
-- editing a note through the intended UI flow
-
-UI test workflow rules for this repo:
-
-- Every `XCUIApplication` that a test launches must be terminated explicitly, either in `tearDownWithError`, via `defer`, or both. Do not rely on XCTest to clean up app lifecycle implicitly.
-- Performance-style launch tests must terminate the app inside each measurement iteration so repeated runs do not leak background instances.
-- Prefer deterministic launch arguments or environment variables such as `MATHPDF_OPEN_DOCUMENT` over driving `NSOpenPanel` in UI automation.
-- Before adding UI assertions, add stable accessibility identifiers or deterministic text hooks to the app surfaces under test.
-- If a UI test is only taking a screenshot or proving launch, it still needs a concrete assertion and explicit termination; screenshot-only template tests are not enough for workflow validation.
-
-For early feature work, manual product validation is acceptable if the UI is still in flux, but do not stop at “build succeeded” when the change is user-visible.
-
-For user-visible reader and renderer checks, the standard manual loop is:
-
-- build or launch the signed app
-- open a representative test PDF, usually `pdfs for testing/ell_curves.pdf`
-- exercise the changed workflow in the running app
-- capture a screenshot of the app window with the macOS window-capture skill
-- inspect the screenshot and report what it proves
+- Every `XCUIApplication` that a test launches must be terminated explicitly.
+- Prefer deterministic launch arguments or environment variables such as `MATHPDF_OPEN_DOCUMENT` over driving `NSOpenPanel`.
+- Add stable accessibility identifiers before depending on UI assertions.
+- A screenshot-only UI test is not enough; it still needs a concrete assertion.
 
 ## Documentation Rules
 
