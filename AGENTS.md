@@ -103,6 +103,14 @@ Use real commands that match this repo:
 - Test: `xcodebuild -project MathPDF.xcodeproj -scheme MathPDF -derivedDataPath .build/DerivedData CODE_SIGNING_ALLOWED=NO test`
 - Build and launch helper: `scripts/build-and-launch.sh`
 
+Signed-versus-unsigned local validation is currently a meaningful debugging axis for the `WKWebView` math renderer:
+
+- `scripts/build-and-launch.sh --unsigned` builds into `.build/DerivedData` with `CODE_SIGNING_ALLOWED=NO`. Use this when you want the historically known-good unsigned renderer path.
+- `scripts/build-and-launch.sh --signed` builds into `.build/SignedDerivedData` with the project's normal signing settings. Use this when you need the shipping-like sandboxed runtime.
+- Add `--build-only` to either mode when you need to inspect the built `.app` or launch it manually.
+- The signed app target must keep `ENABLE_OUTGOING_NETWORK_CONNECTIONS = YES`. Without the resulting `com.apple.security.network.client` entitlement, the sandboxed `WKWebView` renderer crashes its `WebContent` and `Networking` helper processes even for local `loadHTMLString` note content.
+- Do not reintroduce a persistent `CODE_SIGNING_ALLOWED = NO` Xcode build-setting override just to get an unsigned build; that contaminates plain `xcodebuild` products and obscures signed-versus-unsigned comparisons.
+
 Current project facts confirmed locally:
 
 - Scheme: `MathPDF`

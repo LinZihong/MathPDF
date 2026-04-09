@@ -14,6 +14,13 @@ struct MathPDFApp: App {
     var body: some Scene {
         WindowGroup {
             ContentView(controller: controller)
+                .onOpenURL { url in
+                    guard url.isFileURL else {
+                        return
+                    }
+
+                    controller.openDocument(at: url)
+                }
         }
         .commands {
             CommandGroup(after: .newItem) {

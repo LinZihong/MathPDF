@@ -19,6 +19,7 @@ final class ReaderDocumentController: ObservableObject {
     @Published var errorMessage: String?
 
     private var didAttemptLaunchOpen = false
+    private var securityScopedDocumentURL: URL?
 
     var selectedNote: AnnotationNote? {
         notes.first(where: { $0.id == selectedNoteID })
@@ -51,9 +52,24 @@ final class ReaderDocumentController: ObservableObject {
     }
 
     func openDocument(at url: URL) {
+        let startedSecurityScope = beginAccessingSecurityScopedDocumentIfNeeded(url)
+
         guard let pdfDocument = PDFDocument(url: url) else {
+            if startedSecurityScope {
+                url.stopAccessingSecurityScopedResource()
+            }
             errorMessage = "MathPDF couldn't load \(url.lastPathComponent)."
             return
+        }
+
+        if let previousURL = securityScopedDocumentURL, previousURL != url {
+            previousURL.stopAccessingSecurityScopedResource()
+        }
+
+        if startedSecurityScope {
+            securityScopedDocumentURL = url
+        } else if securityScopedDocumentURL != url {
+            securityScopedDocumentURL = nil
         }
 
         documentURL = url
@@ -63,15 +79,50 @@ final class ReaderDocumentController: ObservableObject {
         errorMessage = nil
     }
 
+    private func beginAccessingSecurityScopedDocumentIfNeeded(_ url: URL) -> Bool {
+        guard url.isFileURL else {
+            return false
+        }
+
+        if securityScopedDocumentURL == url {
+            return false
+        }
+
+        return url.startAccessingSecurityScopedResource()
+    }
+
     private func launchDocumentPath() -> String? {
-        let arguments = ProcessInfo.processInfo.arguments
+        Self.launchDocumentPath(
+            arguments: ProcessInfo.processInfo.arguments,
+            environment: ProcessInfo.processInfo.environment
+        )
+    }
+
+    nonisolated static func launchDocumentPath(
+        arguments: [String],
+        environment: [String: String],
+        fileExists: (String) -> Bool = { FileManager.default.fileExists(atPath: $0) }
+    ) -> String? {
         if let index = arguments.firstIndex(of: "--open-document") {
             let pathIndex = arguments.index(after: index)
             if pathIndex < arguments.endIndex {
-                return arguments[pathIndex]
+                return NSString(string: arguments[pathIndex]).expandingTildeInPath
             }
         }
 
-        return ProcessInfo.processInfo.environment["MATHPDF_OPEN_DOCUMENT"]
+        if let positionalPath = arguments
+            .dropFirst()
+            .map({ NSString(string: $0).expandingTildeInPath })
+            .first(where: { argument in
+                !argument.hasPrefix("-") && fileExists(argument)
+            }) {
+            return positionalPath
+        }
+
+        if let environmentPath = environment["MATHPDF_OPEN_DOCUMENT"] {
+            return NSString(string: environmentPath).expandingTildeInPath
+        }
+
+        return nil
     }
 }

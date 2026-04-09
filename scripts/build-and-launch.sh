@@ -5,13 +5,119 @@ ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 PROJECT_PATH="$ROOT_DIR/MathPDF.xcodeproj"
 SCHEME="MathPDF"
 CONFIGURATION="${CONFIGURATION:-Debug}"
-DERIVED_DATA_PATH="$ROOT_DIR/.build/DerivedData"
+SIGNING_MODE="${MATHPDF_SIGNING_MODE:-unsigned}"
+BUILD_ONLY="${MATHPDF_BUILD_ONLY:-0}"
+DOCUMENT_PATH=""
+RENDERER_EXPERIMENT="${MATHPDF_RENDERER_EXPERIMENT:-}"
+RENDERER_DIAGNOSTICS="${MATHPDF_RENDERER_DIAGNOSTICS:-0}"
+SCRIPT_NAME="${0:t}"
+
+usage() {
+  cat >&2 <<EOF
+Usage: $SCRIPT_NAME [--signed|--unsigned] [--build-only] [--renderer-experiment name] [--renderer-diagnostics] [path-to-pdf]
+
+Defaults:
+  --unsigned   Build with CODE_SIGNING_ALLOWED=NO into .build/DerivedData
+  --signed     Build with the project's current signing settings into .build/SignedDerivedData
+  --build-only Build but do not launch the app
+  --renderer-experiment name  Pass a renderer experiment to the app
+  --renderer-diagnostics      Show the native renderer diagnostics readout in the note inspector
+
+Environment overrides:
+  CONFIGURATION=Debug|Release
+  MATHPDF_OPEN_DOCUMENT=/abs/path/to/file.pdf
+  MATHPDF_SIGNING_MODE=signed|unsigned
+  MATHPDF_BUILD_ONLY=1
+  MATHPDF_RENDERER_EXPERIMENT=production|production-no-height|plain-text|inline-js|inline-js-height|katex-no-fonts
+  MATHPDF_RENDERER_DIAGNOSTICS=1
+EOF
+  exit 1
+}
+
+while [[ "$#" -gt 0 ]]; do
+  case "$1" in
+    --signed)
+      SIGNING_MODE="signed"
+      ;;
+    --unsigned)
+      SIGNING_MODE="unsigned"
+      ;;
+    --build-only)
+      BUILD_ONLY=1
+      ;;
+    --renderer-experiment)
+      shift
+      if [[ "$#" -eq 0 ]]; then
+        echo "--renderer-experiment requires a value." >&2
+        usage
+      fi
+      RENDERER_EXPERIMENT="$1"
+      ;;
+    --renderer-diagnostics)
+      RENDERER_DIAGNOSTICS=1
+      ;;
+    -h|--help)
+      usage
+      ;;
+    --)
+      shift
+      break
+      ;;
+    -*)
+      echo "Unknown option: $1" >&2
+      usage
+      ;;
+    *)
+      if [[ -n "$DOCUMENT_PATH" ]]; then
+        echo "Only one PDF path may be provided." >&2
+        usage
+      fi
+      DOCUMENT_PATH="$1"
+      ;;
+  esac
+  shift
+done
+
+if [[ -z "$DOCUMENT_PATH" && "$#" -gt 0 ]]; then
+  DOCUMENT_PATH="$1"
+  shift
+fi
+
+if [[ "$#" -gt 0 ]]; then
+  echo "Unexpected extra arguments: $*" >&2
+  usage
+fi
+
+DOCUMENT_PATH="${DOCUMENT_PATH:-${MATHPDF_OPEN_DOCUMENT:-}}"
+
+if [[ -n "$DOCUMENT_PATH" ]]; then
+  if ! DOCUMENT_PATH="$(realpath "$DOCUMENT_PATH" 2>/dev/null)"; then
+    echo "Document path does not exist: $DOCUMENT_PATH" >&2
+    exit 1
+  fi
+fi
+
+case "$SIGNING_MODE" in
+  signed)
+    DERIVED_DATA_PATH="${DERIVED_DATA_PATH:-$ROOT_DIR/.build/SignedDerivedData}"
+    XCODEBUILD_SIGNING_ARGS=()
+    ;;
+  unsigned)
+    DERIVED_DATA_PATH="${DERIVED_DATA_PATH:-$ROOT_DIR/.build/DerivedData}"
+    XCODEBUILD_SIGNING_ARGS=(CODE_SIGNING_ALLOWED=NO)
+    ;;
+  *)
+    echo "Unsupported signing mode: $SIGNING_MODE" >&2
+    usage
+    ;;
+esac
+
 APP_PATH="$DERIVED_DATA_PATH/Build/Products/$CONFIGURATION/MathPDF.app"
-EXECUTABLE_PATH="$APP_PATH/Contents/MacOS/MathPDF"
 
 echo "Project: $PROJECT_PATH"
 echo "Scheme: $SCHEME"
 echo "Configuration: $CONFIGURATION"
+echo "Signing mode: $SIGNING_MODE"
 echo "DerivedData: $DERIVED_DATA_PATH"
 
 xcodebuild \
@@ -19,7 +125,7 @@ xcodebuild \
   -scheme "$SCHEME" \
   -configuration "$CONFIGURATION" \
   -derivedDataPath "$DERIVED_DATA_PATH" \
-  CODE_SIGNING_ALLOWED=NO \
+  "${XCODEBUILD_SIGNING_ARGS[@]}" \
   build
 
 if [[ ! -d "$APP_PATH" ]]; then
@@ -27,15 +133,31 @@ if [[ ! -d "$APP_PATH" ]]; then
   exit 1
 fi
 
-if [[ -n "${MATHPDF_OPEN_DOCUMENT:-}" ]]; then
-  if [[ ! -x "$EXECUTABLE_PATH" ]]; then
-    echo "Built executable not found at $EXECUTABLE_PATH" >&2
-    exit 1
-  fi
-
-  "$EXECUTABLE_PATH" --open-document "$MATHPDF_OPEN_DOCUMENT" >/dev/null 2>&1 &
-  echo "Launched $APP_PATH with $MATHPDF_OPEN_DOCUMENT"
+echo "Built app: $APP_PATH"
+if codesign_output="$(codesign -dvv "$APP_PATH" 2>&1)"; then
+  echo "$codesign_output" | grep -E '^(Identifier|Authority|TeamIdentifier|Signed Time)=' || true
 else
-  open "$APP_PATH"
+  echo "codesign: app is unsigned"
+fi
+
+if [[ "$BUILD_ONLY" == "1" ]]; then
+  echo "Build-only mode: not launching app."
+  exit 0
+fi
+
+APP_ARGS=()
+if [[ -n "$RENDERER_EXPERIMENT" ]]; then
+  APP_ARGS+=(--renderer-experiment "$RENDERER_EXPERIMENT")
+fi
+
+if [[ "$RENDERER_DIAGNOSTICS" == "1" ]]; then
+  APP_ARGS+=(--renderer-diagnostics)
+fi
+
+if [[ -n "$DOCUMENT_PATH" ]]; then
+  open -n -a "$APP_PATH" "$DOCUMENT_PATH" --args "${APP_ARGS[@]}"
+  echo "Launched $APP_PATH with $DOCUMENT_PATH"
+else
+  open -n -a "$APP_PATH" --args "${APP_ARGS[@]}"
   echo "Launched $APP_PATH"
 fi

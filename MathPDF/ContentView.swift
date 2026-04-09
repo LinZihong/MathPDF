@@ -152,17 +152,6 @@ private struct NoteInspectorView: View {
                         .padding()
                         .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 12))
                         .accessibilityIdentifier("rendered-note-content")
-
-                    VStack(alignment: .leading, spacing: 8) {
-                        Text("Stored Plain Text")
-                            .font(.headline)
-                            .accessibilityIdentifier("raw-note-title")
-                        Text(note.contents)
-                            .font(.body.monospaced())
-                            .textSelection(.enabled)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .accessibilityIdentifier("raw-note-content")
-                    }
                 } else if noteCount > 0 {
                     ContentUnavailableView {
                         Label("Select a Note", systemImage: "text.bubble")

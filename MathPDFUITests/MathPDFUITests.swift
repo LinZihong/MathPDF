@@ -29,6 +29,21 @@ final class MathPDFUITests: XCTestCase {
         app = nil
     }
 
+    private var rendererExperiment: String {
+        ProcessInfo.processInfo.environment["MATHPDF_UI_RENDERER_EXPERIMENT"] ?? "production"
+    }
+
+    private var expectedDiagnosticsSubstrings: [String] {
+        guard let rawValue = ProcessInfo.processInfo.environment["MATHPDF_UI_EXPECT_CONTAINS"] else {
+            return []
+        }
+
+        return rawValue
+            .split(separator: ";")
+            .map { String($0) }
+            .filter { !$0.isEmpty }
+    }
+
     @MainActor
     func testLaunchesFixtureAndShowsRenderedNote() throws {
         app.launchEnvironment["MATHPDF_OPEN_DOCUMENT"] = fixturePath
@@ -47,13 +62,36 @@ final class MathPDFUITests: XCTestCase {
         XCTAssertTrue(metadata.exists)
         XCTAssertTrue(metadata.label.contains("Page 1"))
 
-        let rawText = app.staticTexts["raw-note-content"]
-        XCTAssertTrue(rawText.exists)
-        XCTAssertTrue(rawText.label.contains("$a$"))
-        XCTAssertTrue(rawText.label.contains("\\[ a^n + b^n = c^n \\]"))
-
         let renderedContent = app.otherElements["rendered-note-content"]
         XCTAssertTrue(renderedContent.exists)
+
+        XCTAssertFalse(app.staticTexts["raw-note-title"].exists)
+    }
+
+    @MainActor
+    func testRendererDiagnosticsProbe() throws {
+        app.launchEnvironment["MATHPDF_OPEN_DOCUMENT"] = fixturePath
+        app.launchArguments += ["--renderer-diagnostics", "--renderer-experiment", rendererExperiment]
+        app.launch()
+
+        XCTAssertEqual(app.state, .runningForeground)
+
+        let noteRow = app.staticTexts.containing(NSPredicate(format: "label CONTAINS %@", "This is a test comment")).firstMatch
+        XCTAssertTrue(noteRow.waitForExistence(timeout: 10))
+        noteRow.click()
+
+        let diagnostics = app.staticTexts["renderer-diagnostics"]
+        XCTAssertTrue(diagnostics.waitForExistence(timeout: 10))
+
+        let diagnosticsText = waitForStableDiagnostics(from: diagnostics)
+        print("Renderer diagnostics (\(rendererExperiment)):\n\(diagnosticsText)")
+
+        XCTAssertTrue(diagnosticsText.contains("experiment: \(rendererExperiment)"), diagnosticsText)
+        XCTAssertFalse(diagnosticsText.contains("state: <empty>"), diagnosticsText)
+
+        for expected in expectedDiagnosticsSubstrings {
+            XCTAssertTrue(diagnosticsText.contains(expected), diagnosticsText)
+        }
     }
 
     @MainActor
@@ -62,5 +100,24 @@ final class MathPDFUITests: XCTestCase {
             app.launch()
             app.terminate()
         }
+    }
+
+    private func waitForStableDiagnostics(from element: XCUIElement, timeout: TimeInterval = 8) -> String {
+        let deadline = Date().addingTimeInterval(timeout)
+        var latest = element.label
+
+        while Date() < deadline {
+            latest = element.label
+            if latest.contains("state: rendered")
+                || latest.contains("state: raw")
+                || latest.contains("state: text")
+                || latest.contains("webContentTerminated: true") {
+                return latest
+            }
+
+            RunLoop.current.run(until: Date().addingTimeInterval(0.2))
+        }
+
+        return latest
     }
 }
