@@ -99,14 +99,14 @@ Avoid collapsing these concerns into a single `ContentView` replacement.
 
 Use real commands that match this repo:
 
-- Build: `xcodebuild -project MathPDF.xcodeproj -scheme MathPDF -derivedDataPath .build/DerivedData CODE_SIGNING_ALLOWED=NO build`
-- Test: `xcodebuild -project MathPDF.xcodeproj -scheme MathPDF -derivedDataPath .build/DerivedData CODE_SIGNING_ALLOWED=NO test`
+- Build: `xcodebuild -project MathPDF.xcodeproj -scheme MathPDF -derivedDataPath .build/SignedDerivedData build`
+- Test: `xcodebuild -project MathPDF.xcodeproj -scheme MathPDF -derivedDataPath .build/SignedDerivedData test`
 - Build and launch helper: `scripts/build-and-launch.sh`
 
-Signed-versus-unsigned local validation is currently a meaningful debugging axis for the `WKWebView` math renderer:
+Signed builds are the default validation path for this repo because the shipping `WKWebView` renderer behavior depends on sandbox entitlements:
 
-- `scripts/build-and-launch.sh --unsigned` builds into `.build/DerivedData` with `CODE_SIGNING_ALLOWED=NO`. Use this when you want the historically known-good unsigned renderer path.
-- `scripts/build-and-launch.sh --signed` builds into `.build/SignedDerivedData` with the project's normal signing settings. Use this when you need the shipping-like sandboxed runtime.
+- `scripts/build-and-launch.sh --signed` builds into `.build/SignedDerivedData` with the project's normal signing settings. Use this for normal builds, tests, launches, and manual product validation.
+- `scripts/build-and-launch.sh --unsigned` builds into `.build/DerivedData` with `CODE_SIGNING_ALLOWED=NO`. Use this only for narrow debugging experiments when a task explicitly needs an unsigned comparison.
 - Add `--build-only` to either mode when you need to inspect the built `.app` or launch it manually.
 - The signed app target must keep `ENABLE_OUTGOING_NETWORK_CONNECTIONS = YES`. Without the resulting `com.apple.security.network.client` entitlement, the sandboxed `WKWebView` renderer crashes its `WebContent` and `Networking` helper processes even for local `loadHTMLString` note content.
 - Do not reintroduce a persistent `CODE_SIGNING_ALLOWED = NO` Xcode build-setting override just to get an unsigned build; that contaminates plain `xcodebuild` products and obscures signed-versus-unsigned comparisons.
@@ -128,7 +128,7 @@ Use a small trustworthy validation loop after each change. Run the narrowest com
 
 When working on tests, keep the workflow disciplined:
 
-- For unit-test iteration, prefer focused invocations such as `xcodebuild -project MathPDF.xcodeproj -scheme MathPDF -derivedDataPath .build/DerivedData CODE_SIGNING_ALLOWED=NO -only-testing:MathPDFTests test`.
+- For unit-test iteration, prefer focused signed invocations such as `xcodebuild -project MathPDF.xcodeproj -scheme MathPDF -derivedDataPath .build/SignedDerivedData -only-testing:MathPDFTests test`.
 - For UI-test iteration, first prove the target compiles with `build-for-testing` before running the test bundle.
 - Do not leave template placeholder tests in place once a target gains real workflow coverage. Remove them or replace them with meaningful checks.
 
@@ -165,7 +165,15 @@ For the first MVP that opens PDFs and renders existing math-bearing comments, us
 - selecting that note reveals it in context
 - the note inspector renders the math more readably while still exposing the stored plain text
 
-When using launch automation for that fixture, prefer `MATHPDF_OPEN_DOCUMENT="$PWD/pdfs for testing/ell_curves.pdf" scripts/build-and-launch.sh`.
+When using launch automation for that fixture, prefer the signed helper path:
+
+- `scripts/build-and-launch.sh --signed "pdfs for testing/ell_curves.pdf"`
+
+Correctly opening a test PDF and capturing a screenshot of the resulting app window is standard evidence for manual validation of user-visible changes. Use the macOS window-capture skill workflow with a deterministic `/tmp` path, for example:
+
+- `/Users/linzihong/.codex/skills/macos-window-capture/scripts/capture_app_window.sh --app "MathPDF" --output /tmp/mathpdf-debug/ell-curves-validation.png`
+
+If the screenshot is part of the validation record, inspect it before reporting success.
 
 Use UI tests for stable, repeatable workflows once the UI exists, especially:
 
@@ -184,6 +192,14 @@ UI test workflow rules for this repo:
 - If a UI test is only taking a screenshot or proving launch, it still needs a concrete assertion and explicit termination; screenshot-only template tests are not enough for workflow validation.
 
 For early feature work, manual product validation is acceptable if the UI is still in flux, but do not stop at “build succeeded” when the change is user-visible.
+
+For user-visible reader and renderer checks, the standard manual loop is:
+
+- build or launch the signed app
+- open a representative test PDF, usually `pdfs for testing/ell_curves.pdf`
+- exercise the changed workflow in the running app
+- capture a screenshot of the app window with the macOS window-capture skill
+- inspect the screenshot and report what it proves
 
 ## Documentation Rules
 
