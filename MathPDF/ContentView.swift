@@ -20,6 +20,9 @@ struct ContentView: View {
         .task {
             controller.openLaunchDocumentIfNeeded()
         }
+        .onChange(of: controller.selectedNoteID) {
+            controller.activateSidebarSelection()
+        }
         .alert("Couldn't Open PDF", isPresented: errorIsPresented) {
             Button("OK", role: .cancel) {
                 controller.errorMessage = nil
@@ -82,15 +85,14 @@ struct ContentView: View {
     @ViewBuilder
     private var detail: some View {
         if let pdfDocument = controller.pdfDocument {
-            HSplitView {
-                PDFReaderView(document: pdfDocument, focusedNote: controller.selectedNote)
-                    .frame(minWidth: 500, minHeight: 500)
-
-                NoteInspectorView(note: controller.selectedNote, noteCount: controller.notes.count)
-                    .frame(minWidth: 320, idealWidth: 360)
-                    .background(Color(nsColor: .windowBackgroundColor))
-                    .accessibilityIdentifier("note-inspector")
-            }
+            PDFReaderView(
+                document: pdfDocument,
+                focusedNote: controller.selectedNote,
+                onActivateAnnotation: controller.activateAnnotation(_:),
+                onSaveNoteContents: controller.saveActiveNoteContents(_:),
+                onCloseNote: controller.dismissActiveNote
+            )
+            .frame(minWidth: 760, minHeight: 500)
         } else {
             ContentUnavailableView {
                 Label("Open a PDF", systemImage: "doc.richtext")
@@ -116,7 +118,7 @@ struct ContentView: View {
     }
 }
 
-private struct NoteListRow: View {
+struct NoteListRow: View {
     let note: AnnotationNote
 
     var body: some View {
@@ -124,50 +126,9 @@ private struct NoteListRow: View {
             Text("Page \(note.pageIndex + 1)")
                 .font(.caption)
                 .foregroundStyle(.secondary)
-            Text(note.contents.replacingOccurrences(of: "\n", with: " "))
+            Text(note.trimmedContents.isEmpty ? "Empty note" : note.contents.replacingOccurrences(of: "\n", with: " "))
                 .lineLimit(3)
         }
         .padding(.vertical, 4)
-    }
-}
-
-private struct NoteInspectorView: View {
-    let note: AnnotationNote?
-    let noteCount: Int
-
-    var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 16) {
-                if let note {
-                    Text("Rendered Note")
-                        .font(.title2.weight(.semibold))
-                        .accessibilityIdentifier("rendered-note-title")
-
-                    Text("Page \(note.pageIndex + 1) • \(note.annotationType)")
-                        .font(.subheadline)
-                        .foregroundStyle(.secondary)
-                        .accessibilityIdentifier("rendered-note-metadata")
-
-                    MathNoteView(rawText: note.contents)
-                        .padding()
-                        .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 12))
-                        .accessibilityIdentifier("rendered-note-content")
-                } else if noteCount > 0 {
-                    ContentUnavailableView {
-                        Label("Select a Note", systemImage: "text.bubble")
-                    } description: {
-                        Text("Pick a note from the sidebar to reveal it in the PDF and render its math content.")
-                    }
-                } else {
-                    ContentUnavailableView {
-                        Label("No Notes Found", systemImage: "text.bubble")
-                    } description: {
-                        Text("This PDF has no supported annotation comments to inspect.")
-                    }
-                }
-            }
-            .padding(20)
-            .frame(maxWidth: .infinity, alignment: .leading)
-        }
     }
 }

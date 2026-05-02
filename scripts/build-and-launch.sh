@@ -155,9 +155,9 @@ if [[ "$RENDERER_DIAGNOSTICS" == "1" ]]; then
 fi
 
 if [[ -n "$DOCUMENT_PATH" ]]; then
-  open -n -a "$APP_PATH" "$DOCUMENT_PATH" --args "${APP_ARGS[@]}"
+  open -a "$APP_PATH" "$DOCUMENT_PATH" --args "${APP_ARGS[@]}"
   echo "Launched $APP_PATH with $DOCUMENT_PATH"
 else
-  open -n -a "$APP_PATH" --args "${APP_ARGS[@]}"
+  open -a "$APP_PATH" --args "${APP_ARGS[@]}"
   echo "Launched $APP_PATH"
 fi

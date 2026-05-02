@@ -386,6 +386,8 @@ enum MathNoteRenderer {
           margin: 0;
           padding: 0;
           background: transparent;
+          min-height: 100%;
+          overflow-y: auto;
         }
 
         body {
@@ -407,10 +409,32 @@ enum MathNoteRenderer {
 
         return """
         if (window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.noteHeight) {
-          window.requestAnimationFrame(() => {
-            const height = Math.ceil(document.documentElement.scrollHeight);
+          const publishNoteHeight = () => {
+            const root = document.getElementById("note-root");
+            const body = document.body;
+            const documentElement = document.documentElement;
+            const height = Math.ceil(Math.max(
+              root ? root.scrollHeight : 0,
+              root ? root.offsetHeight : 0,
+              body ? body.scrollHeight : 0,
+              body ? body.offsetHeight : 0,
+              documentElement ? documentElement.scrollHeight : 0,
+              documentElement ? documentElement.offsetHeight : 0
+            ));
             window.webkit.messageHandlers.noteHeight.postMessage(height);
+          };
+
+          window.requestAnimationFrame(publishNoteHeight);
+          [50, 150, 300, 700].forEach((delay) => {
+            window.setTimeout(publishNoteHeight, delay);
           });
+
+          if (window.ResizeObserver) {
+            const root = document.getElementById("note-root") || document.body;
+            if (root) {
+              new ResizeObserver(publishNoteHeight).observe(root);
+            }
+          }
         }
         """
     }
@@ -489,12 +513,18 @@ enum MathNoteRenderer {
 
 struct MathNoteView: View {
     let rawText: String
+    let maximumContentHeight: CGFloat?
 
     private let debugSettings = MathRendererDebugSettings.current()
 
     @State private var renderedDocument: MathRenderedDocument?
     @State private var contentHeight: CGFloat = 96
     @State private var diagnostics = MathRendererDiagnostics.initial(for: .production)
+
+    init(rawText: String, maximumContentHeight: CGFloat? = nil) {
+        self.rawText = rawText
+        self.maximumContentHeight = maximumContentHeight
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -508,7 +538,7 @@ struct MathNoteView: View {
                         contentHeight: $contentHeight
                     )
                     .id("\(renderedDocument.experiment.rawValue)-\(renderedDocument.enablesHeightMessages)")
-                    .frame(height: max(contentHeight, 96))
+                    .frame(height: renderedContentFrameHeight)
                 } else {
                     fallbackView
                 }
@@ -545,6 +575,15 @@ struct MathNoteView: View {
             .frame(maxWidth: .infinity, alignment: .leading)
             .font(.system(size: 16, weight: .regular, design: .default))
             .textSelection(.enabled)
+    }
+
+    private var renderedContentFrameHeight: CGFloat {
+        let intrinsicHeight = max(contentHeight, 96)
+        guard let maximumContentHeight else {
+            return intrinsicHeight
+        }
+
+        return min(intrinsicHeight, maximumContentHeight)
     }
 }
 
@@ -603,10 +642,14 @@ private struct MathNoteWebView: NSViewRepresentable {
 
         func beginLoad(experiment: String) {
             sampleToken += 1
-            diagnostics = .initial(
+            var initialDiagnostics = MathRendererDiagnostics.initial(
                 for: MathRendererExperiment(rawValue: experiment) ?? .production
             )
-            diagnostics.lastEvent = "loading"
+            initialDiagnostics.lastEvent = "loading"
+
+            DispatchQueue.main.async { [weak self] in
+                self?.diagnostics = initialDiagnostics
+            }
         }
 
         func userContentController(_ userContentController: WKUserContentController, didReceive message: WKScriptMessage) {

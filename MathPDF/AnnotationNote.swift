@@ -11,7 +11,12 @@ import Foundation
 struct AnnotationNote: Identifiable, Equatable {
     let id: String
     let pageIndex: Int
+    let annotationIndex: Int
     let annotationType: String
     let contents: String
     let bounds: CGRect
+
+    var trimmedContents: String {
+        contents.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
 }

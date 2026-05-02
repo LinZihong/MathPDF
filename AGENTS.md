@@ -107,11 +107,13 @@ Use real commands that match this repo:
 
 Validation defaults:
 
+- If a future Codex session starts in a restricted sandbox by mistake, remind the user to grant full filesystem and app-launch access for this project before attempting manual validation or signed launch workflows.
 - Use signed builds by default for builds, tests, launches, and manual validation.
 - Use `scripts/build-and-launch.sh --signed` for normal app validation.
 - Use `scripts/build-and-launch.sh --unsigned` only for narrow debugging experiments that explicitly need an unsigned comparison.
 - Add `--build-only` when you need to inspect the built `.app` or launch it manually.
 - The signed app target must keep `ENABLE_OUTGOING_NETWORK_CONNECTIONS = YES`. Without the resulting `com.apple.security.network.client` entitlement, the sandboxed `WKWebView` renderer crashes its `WebContent` and `Networking` helper processes even for local `loadHTMLString` note content.
+- Annotation authoring and save-to-document workflows require `ENABLE_USER_SELECTED_FILES = readwrite`; do not regress that to `readonly` once editing ships.
 - Do not reintroduce a persistent `CODE_SIGNING_ALLOWED = NO` Xcode build-setting override just to get an unsigned build; that contaminates plain `xcodebuild` products and obscures signed-versus-unsigned comparisons.
 
 Use a small trustworthy loop after each change. Run the narrowest command that proves the touched contract, then expand only as needed:

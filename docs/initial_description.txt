@@ -24,6 +24,7 @@ Works with highlights that have attached notes.
 Works with box-style note annotations.
 Clicking a note icon/box opens a popover for that note.
 Notes selected from the sidebar also open in context.
+When a PDF carries Preview-style popup companion boxes for highlight notes, MathPDF should preserve them for interoperability but avoid relying on them as the primary in-app note UI.
 Math behavior:
 Supports common MathJax-style delimiters and broadly compatible math syntax.
 Rendering should be forgiving and user-friendly.
