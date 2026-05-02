@@ -48,8 +48,9 @@ Use this order when instructions conflict:
 1. Direct user instructions in the current conversation.
 2. [docs/initial_description.txt](/Users/linzihong/Documents/Development/Xcode/MathPDF/docs/initial_description.txt)
 3. This `AGENTS.md`
-4. `PLANS.md` and plan-specific docs created for a task
-5. Existing code and tests
+4. [docs/CURRENT.md](/Users/linzihong/Documents/Development/Xcode/MathPDF/docs/CURRENT.md)
+5. `PLANS.md` and plan-specific docs created for a task
+6. Existing code and tests
 
 When a product decision is not settled in the description, record it as an explicit assumption in the relevant plan or ask the user if it affects architecture or compatibility.
 
@@ -59,9 +60,10 @@ When a product decision is not settled in the description, record it as an expli
 - `MathPDFTests/`: unit and logic tests using Swift Testing.
 - `MathPDFUITests/`: UI and workflow tests with XCTest.
 - `docs/`: product notes and supporting design material.
-- `docs/plans/`: checked-in executable plans plus the master plan index.
-- `docs/plans/EXECPLAN_INDEX.md`: master index of all checked-in executable plans and their relationships.
-- [PLANS.md](/Users/linzihong/Documents/Development/Xcode/MathPDF/PLANS.md): required format and maintenance rules for execution plans.
+- `docs/CURRENT.md`: short handoff note for the active repository state.
+- `docs/plans/`: compact Work Cards plus historical ExecPlans.
+- `docs/plans/EXECPLAN_INDEX.md`: master index of checked-in Work Cards and historical plans.
+- [PLANS.md](/Users/linzihong/Documents/Development/Xcode/MathPDF/PLANS.md): required format and maintenance rules for Work Cards. The repo migrated from long ExecPlans to compact Work Cards on 2026-05-02.
 
 ## Working Rules
 
@@ -148,9 +150,9 @@ UI test rules:
 
 ## Documentation Rules
 
-- For any task expected to last more than a small, single-file edit, create or update a plan that follows [PLANS.md](/Users/linzihong/Documents/Development/Xcode/MathPDF/PLANS.md).
-- Store checked-in ExecPlans under [docs/plans/](/Users/linzihong/Documents/Development/Xcode/MathPDF/docs/plans).
-- Whenever you create, supersede, pause, or complete an ExecPlan, update [docs/plans/EXECPLAN_INDEX.md](/Users/linzihong/Documents/Development/Xcode/MathPDF/docs/plans/EXECPLAN_INDEX.md) in the same change. Future sessions should be able to discover plan relationships from the index alone.
-- Keep plans self-contained. A future contributor should not need chat history to continue.
+- For any task expected to last more than a small, single-file edit, create or update a compact Work Card that follows [PLANS.md](/Users/linzihong/Documents/Development/Xcode/MathPDF/PLANS.md).
+- Store checked-in Work Cards under [docs/plans/](/Users/linzihong/Documents/Development/Xcode/MathPDF/docs/plans).
+- Whenever you create, supersede, pause, or complete a Work Card, update [docs/plans/EXECPLAN_INDEX.md](/Users/linzihong/Documents/Development/Xcode/MathPDF/docs/plans/EXECPLAN_INDEX.md) in the same change. Future sessions should be able to discover plan relationships from the index alone.
+- Keep [docs/CURRENT.md](/Users/linzihong/Documents/Development/Xcode/MathPDF/docs/CURRENT.md) short and current whenever the repository is left with unfinished active work.
 - When product-facing behavior changes, update [docs/initial_description.txt](/Users/linzihong/Documents/Development/Xcode/MathPDF/docs/initial_description.txt) or add a more structured product doc in `docs/` as part of the same work.
 - When reporting work, always include whether the task was treated as greenfield or existing-project, the exact scheme used, the simulator used or an explicit statement that none was used, and the smallest validation steps actually run.
