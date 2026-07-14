@@ -1,10 +1,3 @@
-//
-//  PDFNoteExtractor.swift
-//  MathPDF
-//
-//  Created by Zihong Lin on 4/5/26.
-//
-
 import PDFKit
 
 enum PDFNoteExtractor {
@@ -12,102 +5,91 @@ enum PDFNoteExtractor {
 
     static func extractNotes(from document: PDFDocument) -> [AnnotationNote] {
         var notes: [AnnotationNote] = []
-
         for pageIndex in 0..<document.pageCount {
-            guard let page = document.page(at: pageIndex) else {
-                continue
-            }
-
-            let annotations = page.annotations
-            for (annotationIndex, annotation) in annotations.enumerated() {
-                guard !isPreviewTextCompanion(annotation, among: annotations) else {
+            guard let page = document.page(at: pageIndex) else { continue }
+            for annotation in page.annotations {
+                guard let note = note(for: annotation, pageIndex: pageIndex, includeEmptyContents: false) else {
                     continue
                 }
-
-                guard let note = note(
-                    for: annotation,
-                    pageIndex: pageIndex,
-                    annotationIndex: annotationIndex,
-                    includeEmptyContents: false
-                ) else {
-                    continue
-                }
-
                 notes.append(note)
             }
         }
-
         return notes
-    }
-
-    private static func isPreviewTextCompanion(
-        _ annotation: PDFAnnotation,
-        among annotations: [PDFAnnotation]
-    ) -> Bool {
-        guard annotationType(annotation, equals: "Text") else {
-            return false
-        }
-
-        let contents = normalizedContents(annotation.contents ?? "")
-        guard !contents.isEmpty else {
-            return false
-        }
-
-        return annotations.contains { candidate in
-            guard annotationType(candidate, equals: "Highlight") else {
-                return false
-            }
-
-            guard normalizedContents(candidate.contents ?? "") == contents else {
-                return false
-            }
-
-            let annotationCenter = CGPoint(x: annotation.bounds.midX, y: annotation.bounds.midY)
-            let candidateAnchor = CGPoint(x: candidate.bounds.maxX, y: candidate.bounds.maxY)
-            return hypot(annotationCenter.x - candidateAnchor.x, annotationCenter.y - candidateAnchor.y) < 80
-        }
     }
 
     static func note(
         for annotation: PDFAnnotation,
         pageIndex: Int,
-        annotationIndex: Int,
         includeEmptyContents: Bool
     ) -> AnnotationNote? {
+        let type = normalizedType(annotation)
+        guard supportedAnnotationTypes.contains(where: { $0.caseInsensitiveCompare(type) == .orderedSame }) else {
+            return nil
+        }
+
         let contents = annotation.contents ?? ""
-        let trimmedContents = contents.trimmingCharacters(in: .whitespacesAndNewlines)
-        let annotationType = annotation.type ?? "Unknown"
-
-        guard annotationType.caseInsensitiveCompare("Popup") != .orderedSame else {
+        let sourceText: String
+        if type.caseInsensitiveCompare("Highlight") == .orderedSame,
+           let page = annotation.page {
+            sourceText = page.selection(for: annotation.bounds)?.string ?? ""
+        } else {
+            sourceText = ""
+        }
+        let hasReadableText = !contents.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            || !sourceText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        guard includeEmptyContents || hasReadableText else {
             return nil
         }
 
-        guard supportedAnnotationTypes.contains(where: {
-            $0.caseInsensitiveCompare(annotationType) == .orderedSame
-        }) else {
-            return nil
-        }
-
-        guard includeEmptyContents || !trimmedContents.isEmpty else {
-            return nil
-        }
-
-        let id = "\(pageIndex)-\(annotationIndex)-\(annotationType)-\(annotation.bounds.integral.debugDescription)"
         return AnnotationNote(
-            id: id,
+            id: "\(pageIndex)-\(ObjectIdentifier(annotation).hashValue)",
             pageIndex: pageIndex,
-            annotationIndex: annotationIndex,
-            annotationType: annotationType,
+            annotationType: type,
             contents: contents,
-            bounds: annotation.bounds
+            sourceText: sourceText,
+            author: annotation.userName?.trimmingCharacters(in: .whitespacesAndNewlines).nilIfEmpty,
+            bounds: annotation.bounds,
+            annotation: annotation
         )
     }
 
-    private static func annotationType(_ annotation: PDFAnnotation, equals type: String) -> Bool {
-        (annotation.type ?? "").caseInsensitiveCompare(type) == .orderedSame
+    static func extractOutline(from document: PDFDocument) -> [DocumentOutlineItem] {
+        guard let root = document.outlineRoot else { return [] }
+        return (0..<root.numberOfChildren).compactMap { index in
+            root.child(at: index).map { outlineItem($0, document: document, path: "\(index)") }
+        }
     }
 
-    private static func normalizedContents(_ contents: String) -> String {
-        contents.trimmingCharacters(in: .whitespacesAndNewlines)
+    private static func outlineItem(
+        _ outline: PDFOutline,
+        document: PDFDocument,
+        path: String
+    ) -> DocumentOutlineItem {
+        let destination = outline.destination ?? (outline.action as? PDFActionGoTo)?.destination
+        let pageIndex = destination
+            .flatMap(\.page)
+            .map { document.index(for: $0) }
+            .flatMap { $0 >= 0 ? $0 : nil }
+        let children = (0..<outline.numberOfChildren).compactMap { index in
+            outline.child(at: index).map {
+                outlineItem($0, document: document, path: "\(path).\(index)")
+            }
+        }
+        return DocumentOutlineItem(
+            id: path,
+            title: outline.label?.trimmingCharacters(in: .whitespacesAndNewlines).nilIfEmpty ?? "Untitled Section",
+            pageIndex: pageIndex,
+            point: destination?.point,
+            children: children
+        )
     }
+
+    private static func normalizedType(_ annotation: PDFAnnotation) -> String {
+        (annotation.type ?? "Unknown").trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+    }
+
+}
+
+private extension String {
+    var nilIfEmpty: String? { isEmpty ? nil : self }
 }

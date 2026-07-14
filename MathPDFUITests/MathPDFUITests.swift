@@ -1,123 +1,76 @@
-//
-//  MathPDFUITests.swift
-//  MathPDFUITests
-//
-//  Created by Zihong Lin on 4/5/26.
-//
-
 import XCTest
 
 final class MathPDFUITests: XCTestCase {
     private var app: XCUIApplication!
-    private var fixturePath: String {
-        URL(fileURLWithPath: #filePath)
-            .deletingLastPathComponent()
-            .deletingLastPathComponent()
-            .appendingPathComponent("pdfs for testing/ell_curves.pdf")
-            .path
-    }
 
     override func setUpWithError() throws {
         continueAfterFailure = false
         app = XCUIApplication()
+        app.launchEnvironment["MATHPDF_UI_FIXTURE"] = "annotated-reader"
+        app.launchArguments += [
+            "-ApplePersistenceIgnoreState", "YES",
+            "-NSDocumentReopenSavedDocuments", "NO",
+            "-NSQuitAlwaysKeepsWindows", "NO"
+        ]
+        app.launch()
     }
 
     override func tearDownWithError() throws {
-        if app?.state == .runningForeground || app?.state == .runningBackground {
-            app.terminate()
-        }
+        quitAppIfRunning()
         app = nil
     }
 
-    private var rendererExperiment: String {
-        ProcessInfo.processInfo.environment["MATHPDF_UI_RENDERER_EXPERIMENT"] ?? "production"
-    }
+    @MainActor
+    func testReaderShellAndExactlyOneRenderedNoteSurface() {
+        XCTAssertTrue(element("pdf-reader").waitForExistence(timeout: 8))
+        XCTAssertTrue(app.staticTexts["/ 3"].waitForExistence(timeout: 8))
 
-    private var expectedDiagnosticsSubstrings: [String] {
-        guard let rawValue = ProcessInfo.processInfo.environment["MATHPDF_UI_EXPECT_CONTAINS"] else {
-            return []
-        }
+        showHighlightsAndNotes()
+        let note = element("note-row-1-highlight")
+        XCTAssertTrue(note.waitForExistence(timeout: 5))
+        note.click()
 
-        return rawValue
-            .split(separator: ";")
-            .map { String($0) }
-            .filter { !$0.isEmpty }
+        XCTAssertTrue(element("note-rendered-content").waitForExistence(timeout: 8))
+        XCTAssertEqual(app.popovers.count, 1, "One annotation must never produce competing PDFKit and MathPDF popovers")
+        XCTAssertTrue(app.buttons["note-edit"].exists)
+        XCTAssertEqual(app.textFields["Page number"].value as? String, "2")
     }
 
     @MainActor
-    func testLaunchesFixtureAndShowsRenderedNote() throws {
-        app.launchEnvironment["MATHPDF_OPEN_DOCUMENT"] = fixturePath
-        app.launch()
+    func testNoteEditingAndDocumentPreambleAreDirectlyReachable() {
+        showHighlightsAndNotes()
+        let note = element("note-row-1-highlight")
+        XCTAssertTrue(note.waitForExistence(timeout: 5))
+        note.click()
+        XCTAssertTrue(app.buttons["note-edit"].waitForExistence(timeout: 8))
+        app.buttons["note-edit"].click()
+        XCTAssertTrue(element("note-editor").waitForExistence(timeout: 5))
 
-        XCTAssertEqual(app.state, .runningForeground)
-
-        let noteRow = app.staticTexts.containing(NSPredicate(format: "label CONTAINS %@", "This is a test comment")).firstMatch
-        XCTAssertTrue(noteRow.waitForExistence(timeout: 10))
-        noteRow.click()
-
-        let renderedTitle = app.staticTexts["rendered-note-title"]
-        XCTAssertTrue(renderedTitle.waitForExistence(timeout: 5))
-
-        let metadata = app.staticTexts["rendered-note-metadata"]
-        XCTAssertTrue(metadata.exists)
-        XCTAssertTrue(metadata.label.contains("Page 1"))
-
-        let renderedContent = app.otherElements["rendered-note-content"]
-        XCTAssertTrue(renderedContent.exists)
-
-        XCTAssertFalse(app.staticTexts["raw-note-title"].exists)
+        app.buttons["Close Inspector"].click()
+        app.buttons["Document Preamble"].click()
+        XCTAssertTrue(app.staticTexts["Math Macros"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.staticTexts["Stored in this PDF"].exists)
     }
 
-    @MainActor
-    func testRendererDiagnosticsProbe() throws {
-        app.launchEnvironment["MATHPDF_OPEN_DOCUMENT"] = fixturePath
-        app.launchArguments += ["--renderer-diagnostics", "--renderer-experiment", rendererExperiment]
-        app.launch()
-
-        XCTAssertEqual(app.state, .runningForeground)
-
-        let noteRow = app.staticTexts.containing(NSPredicate(format: "label CONTAINS %@", "This is a test comment")).firstMatch
-        XCTAssertTrue(noteRow.waitForExistence(timeout: 10))
-        noteRow.click()
-
-        let diagnostics = app.staticTexts["renderer-diagnostics"]
-        XCTAssertTrue(diagnostics.waitForExistence(timeout: 10))
-
-        let diagnosticsText = waitForStableDiagnostics(from: diagnostics)
-        print("Renderer diagnostics (\(rendererExperiment)):\n\(diagnosticsText)")
-
-        XCTAssertTrue(diagnosticsText.contains("experiment: \(rendererExperiment)"), diagnosticsText)
-        XCTAssertFalse(diagnosticsText.contains("state: <empty>"), diagnosticsText)
-
-        for expected in expectedDiagnosticsSubstrings {
-            XCTAssertTrue(diagnosticsText.contains(expected), diagnosticsText)
-        }
+    private func element(_ identifier: String) -> XCUIElement {
+        app.descendants(matching: .any)[identifier]
     }
 
-    @MainActor
-    func testLaunchPerformance() throws {
-        measure(metrics: [XCTApplicationLaunchMetric()]) {
-            app.launch()
+    private func quitAppIfRunning() {
+        guard app?.state == .runningForeground || app?.state == .runningBackground else { return }
+        app.activate()
+        app.typeKey("q", modifierFlags: .command)
+        if !app.wait(for: .notRunning, timeout: 5) {
             app.terminate()
         }
     }
 
-    private func waitForStableDiagnostics(from element: XCUIElement, timeout: TimeInterval = 8) -> String {
-        let deadline = Date().addingTimeInterval(timeout)
-        var latest = element.label
-
-        while Date() < deadline {
-            latest = element.label
-            if latest.contains("state: rendered")
-                || latest.contains("state: raw")
-                || latest.contains("state: text")
-                || latest.contains("webContentTerminated: true") {
-                return latest
-            }
-
-            RunLoop.current.run(until: Date().addingTimeInterval(0.2))
-        }
-
-        return latest
+    private func showHighlightsAndNotes() {
+        let menu = app.menuButtons["sidebar-content-menu"]
+        XCTAssertTrue(menu.waitForExistence(timeout: 5))
+        menu.click()
+        let item = app.menuItems["Highlights and Notes"]
+        XCTAssertTrue(item.waitForExistence(timeout: 5))
+        item.click()
     }
 }

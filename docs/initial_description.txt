@@ -1,30 +1,18 @@
 MathPDF is a clean, elegant PDF reader for Apple platforms, inspired by the simplicity of Preview, but purpose-built for people who write math in annotations.
 Core idea:
-All notes/comments remain plain text in the PDF, but whenever a note contains math notation (such as $...$,
-.
-.
-.
-..., 
-.
-.
-.
-..., or 
-.
-.
-.
-...), the app displays it as properly rendered math for reading comfort. The stored data stays plain-text and PDF-compatible.
+All notes/comments remain plain text in the PDF, but whenever a note contains math notation (such as `$...$`, `$$...$$`, `\(...\)`, or `\[...\]`), the app displays it as properly rendered math for reading comfort. The stored data stays plain-text and PDF-compatible.
 
 Product experience:
-You open a PDF and get a polished document view with a sidebar that has two tabs:
+You open a PDF and get a polished document view with a sidebar whose quiet title menu selects one of two modes:
 
 Table of Contents (document outline)
-Notes (all annotation notes across the document)
+Highlights and Notes (all highlights and annotation notes across the document)
 Annotation behavior:
 Works with highlights that have attached notes.
 Works with box-style note annotations.
 Clicking a note icon/box opens a popover for that note.
 Notes selected from the sidebar also open in context.
-When a PDF carries Preview-style popup companion boxes for highlight notes, MathPDF should preserve them for interoperability but avoid relying on them as the primary in-app note UI.
+When a PDF carries Preview-style popup companion boxes for highlight notes, MathPDF should treat the owning annotation's plain-text contents as authoritative and avoid duplicate in-app note UI. Because PDFKit does not reliably preserve `/Popup` and `/Parent` relationships after editing, MathPDF normalizes popup companions out of the serialized copy while retaining the note text on the owning highlight or text annotation. Saving must not mutate the live document merely to perform this normalization.
 Math behavior:
 Supports common MathJax-style delimiters and broadly compatible math syntax.
 Rendering should be forgiving and user-friendly.
@@ -41,5 +29,22 @@ The preamble should travel with the PDF via metadata so another compatible viewe
 Compatibility intent:
 Keep annotation content and note storage interoperable with normal PDF tools.
 The app adds better rendering and UX, not a proprietary note format.
+MathPDF does not create a duplicate `/Text` annotation for a highlight note.
+PDFKit's standard page annotation remains visible, while MathPDF owns the one
+transient reading surface used inside the app.
 Design intent:
 A minimal, tasteful, “just works” reader that feels native and uncluttered, while giving technical users first-class math note readability.
+
+Current product contract (2026-07-12):
+- The target is the user's research-PDF workflow: multiple document windows, outlines, search, stable page and zoom navigation, highlighting, box notes, rendered math notes, printing, and trustworthy saving.
+- Signature authoring, image editing, cropping, OCR, and comprehensive PDF-form authoring are outside this replacement target.
+- Clicking an annotation already visible in the PDF must never change the document's viewport. Sidebar navigation preserves scale and scrolls only as much as needed.
+- Note edits are undoable document mutations and use native atomic autosave, with Save As and Revert available. A note popover does not own a separate disk-save workflow.
+- The sidebar uses a native list and a title dropdown rather than persistent tabs. Its modes are Table of Contents and Highlights and Notes; bare highlights remain discoverable through extracted source text. The PDF remains the dominant visual surface; preamble editing lives in an optional trailing inspector.
+- Existing notes open for reading; only New Note or explicit Edit focuses the plain-text editor. Sidebar rows remain concise and spatially stable while the popover or inspector owns full note content.
+- The unified toolbar uses a document title/page subtitle, direct page entry, one grouped zoom control, and an always-visible native search field with contextual result navigation.
+- Per-document preambles intentionally support a small annotation-oriented subset: zero-argument aliases, simple parameterized commands, and math operators. Unsupported full-document TeX is ignored gracefully.
+- The preamble is stored as a versioned MathPDF marker inside standard PDF Keywords so unrelated metadata survives and non-MathPDF viewers still see ordinary PDF annotations.
+- Local validation uses realistic excerpts copied to `/tmp/MathPDF-Fixtures`; it never modifies the supplied PDFs in `TestPDFs/` or requests broad Documents-folder access.
+- Detailed local automation and fixture-safety rules live in `docs/TESTING.md`.
+- Detailed implementation and validation requirements live in `docs/plans/preview_replacement_overhaul.md`.

@@ -5,7 +5,7 @@ ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 PROJECT_PATH="$ROOT_DIR/MathPDF.xcodeproj"
 SCHEME="MathPDF"
 CONFIGURATION="${CONFIGURATION:-Debug}"
-SIGNING_MODE="${MATHPDF_SIGNING_MODE:-unsigned}"
+SIGNING_MODE="${MATHPDF_SIGNING_MODE:-signed}"
 BUILD_ONLY="${MATHPDF_BUILD_ONLY:-0}"
 DOCUMENT_PATH=""
 RENDERER_EXPERIMENT="${MATHPDF_RENDERER_EXPERIMENT:-}"
@@ -14,11 +14,12 @@ SCRIPT_NAME="${0:t}"
 
 usage() {
   cat >&2 <<EOF
-Usage: $SCRIPT_NAME [--signed|--unsigned] [--build-only] [--renderer-experiment name] [--renderer-diagnostics] [path-to-pdf]
+Usage: $SCRIPT_NAME [--signed|--developer-signed|--unsigned] [--build-only] [--renderer-experiment name] [--renderer-diagnostics] [path-to-pdf]
 
 Defaults:
-  --unsigned   Build with CODE_SIGNING_ALLOWED=NO into .build/DerivedData
-  --signed     Build with the project's current signing settings into .build/SignedDerivedData
+  --signed     Sign to run locally without requiring an Apple Development certificate
+  --developer-signed  Use the project's Apple Development signing settings
+  --unsigned   Build with CODE_SIGNING_ALLOWED=NO for narrow comparisons only
   --build-only Build but do not launch the app
   --renderer-experiment name  Pass a renderer experiment to the app
   --renderer-diagnostics      Show the native renderer diagnostics readout in the note inspector
@@ -26,7 +27,7 @@ Defaults:
 Environment overrides:
   CONFIGURATION=Debug|Release
   MATHPDF_OPEN_DOCUMENT=/abs/path/to/file.pdf
-  MATHPDF_SIGNING_MODE=signed|unsigned
+  MATHPDF_SIGNING_MODE=signed|developer-signed|unsigned
   MATHPDF_BUILD_ONLY=1
   MATHPDF_RENDERER_EXPERIMENT=production|production-no-height|plain-text|inline-js|inline-js-height|katex-no-fonts
   MATHPDF_RENDERER_DIAGNOSTICS=1
@@ -38,6 +39,9 @@ while [[ "$#" -gt 0 ]]; do
   case "$1" in
     --signed)
       SIGNING_MODE="signed"
+      ;;
+    --developer-signed)
+      SIGNING_MODE="developer-signed"
       ;;
     --unsigned)
       SIGNING_MODE="unsigned"
@@ -100,6 +104,15 @@ fi
 case "$SIGNING_MODE" in
   signed)
     DERIVED_DATA_PATH="${DERIVED_DATA_PATH:-$ROOT_DIR/.build/SignedDerivedData}"
+    XCODEBUILD_SIGNING_ARGS=(
+      CODE_SIGN_IDENTITY=-
+      CODE_SIGN_STYLE=Manual
+      DEVELOPMENT_TEAM=
+      PROVISIONING_PROFILE_SPECIFIER=
+    )
+    ;;
+  developer-signed)
+    DERIVED_DATA_PATH="${DERIVED_DATA_PATH:-$ROOT_DIR/.build/DeveloperSignedDerivedData}"
     XCODEBUILD_SIGNING_ARGS=()
     ;;
   unsigned)
@@ -134,6 +147,21 @@ if [[ ! -d "$APP_PATH" ]]; then
 fi
 
 echo "Built app: $APP_PATH"
+if [[ "$SIGNING_MODE" != "unsigned" ]]; then
+  codesign --verify --deep --strict --verbose=2 "$APP_PATH"
+  entitlements="$(codesign -d --entitlements - "$APP_PATH" 2>&1)"
+  for required_entitlement in \
+    com.apple.security.app-sandbox \
+    com.apple.security.network.client \
+    com.apple.security.files.user-selected.read-write; do
+    if [[ "$entitlements" != *"$required_entitlement"* ]]; then
+      echo "Missing required entitlement: $required_entitlement" >&2
+      exit 1
+    fi
+  done
+  echo "Verified local signature and required sandbox entitlements."
+fi
+
 if codesign_output="$(codesign -dvv "$APP_PATH" 2>&1)"; then
   echo "$codesign_output" | grep -E '^(Identifier|Authority|TeamIdentifier|Signed Time)=' || true
 else
@@ -145,7 +173,10 @@ if [[ "$BUILD_ONLY" == "1" ]]; then
   exit 0
 fi
 
-APP_ARGS=()
+APP_ARGS=(
+  -ApplePersistenceIgnoreState YES
+  -NSQuitAlwaysKeepsWindows NO
+)
 if [[ -n "$RENDERER_EXPERIMENT" ]]; then
   APP_ARGS+=(--renderer-experiment "$RENDERER_EXPERIMENT")
 fi
@@ -155,9 +186,9 @@ if [[ "$RENDERER_DIAGNOSTICS" == "1" ]]; then
 fi
 
 if [[ -n "$DOCUMENT_PATH" ]]; then
-  open -a "$APP_PATH" "$DOCUMENT_PATH" --args "${APP_ARGS[@]}"
+  open -na "$APP_PATH" "$DOCUMENT_PATH" --args "${APP_ARGS[@]}"
   echo "Launched $APP_PATH with $DOCUMENT_PATH"
 else
-  open -a "$APP_PATH" --args "${APP_ARGS[@]}"
+  open -na "$APP_PATH" --args "${APP_ARGS[@]}"
   echo "Launched $APP_PATH"
 fi

@@ -14,6 +14,7 @@ struct MathRenderedDocument: Equatable {
     let baseURL: URL
     let experiment: MathRendererExperiment
     let enablesHeightMessages: Bool
+    let diagnosticsEnabled: Bool
 }
 
 enum MathNoteRendererError: LocalizedError {
@@ -149,6 +150,18 @@ struct MathRendererDiagnostics: Equatable {
 }
 
 enum MathNoteRenderer {
+    private nonisolated(unsafe) static let assetCache: NSCache<NSURL, NSString> = {
+        let cache = NSCache<NSURL, NSString>()
+        cache.countLimit = 12
+        return cache
+    }()
+    private nonisolated(unsafe) static let renderedHTMLCache: NSCache<NSString, NSString> = {
+        let cache = NSCache<NSString, NSString>()
+        cache.countLimit = 128
+        cache.totalCostLimit = 32 * 1_024 * 1_024
+        return cache
+    }()
+
     static func hasMathMarkup(in rawText: String) -> Bool {
         rawText.contains("\\[")
             || rawText.contains("\\(")
@@ -158,6 +171,7 @@ enum MathNoteRenderer {
 
     static func renderedDocument(
         rawText: String,
+        preamble: String = "",
         bundle: Bundle = .main,
         debugSettings: MathRendererDebugSettings = .current()
     ) throws -> MathRenderedDocument {
@@ -167,6 +181,7 @@ enum MathNoteRenderer {
 
         return try renderedDocument(
             rawText: rawText,
+            preamble: preamble,
             assetDirectoryURL: baseURL,
             debugSettings: debugSettings
         )
@@ -174,53 +189,72 @@ enum MathNoteRenderer {
 
     static func renderedDocument(
         rawText: String,
+        preamble: String = "",
         assetDirectoryURL: URL,
         debugSettings: MathRendererDebugSettings = .current()
     ) throws -> MathRenderedDocument {
         let experiment = debugSettings.experiment
+        let cacheKey = [
+            assetDirectoryURL.standardizedFileURL.path,
+            experiment.rawValue,
+            debugSettings.diagnosticsEnabled ? "diagnostics" : "production",
+            String(rawText.utf8.count),
+            rawText,
+            String(preamble.utf8.count),
+            preamble,
+        ].joined(separator: "\u{1F}") as NSString
 
         let html: String
-        switch experiment {
-        case .plainText:
-            html = plainTextHTML(rawText: rawText)
-        case .inlineJavaScript:
-            html = try inlineJavaScriptHTML(
-                rawText: rawText,
-                enableHeightMessages: false
-            )
-        case .inlineJavaScriptWithHeight:
-            html = try inlineJavaScriptHTML(
-                rawText: rawText,
-                enableHeightMessages: true
-            )
-        case .katexNoFonts:
-            html = try productionHTML(
-                rawText: rawText,
-                assetDirectoryURL: assetDirectoryURL,
-                enableHeightMessages: true,
-                includeFontFaces: false
-            )
-        case .production:
-            html = try productionHTML(
-                rawText: rawText,
-                assetDirectoryURL: assetDirectoryURL,
-                enableHeightMessages: true,
-                includeFontFaces: true
-            )
-        case .productionNoHeight:
-            html = try productionHTML(
-                rawText: rawText,
-                assetDirectoryURL: assetDirectoryURL,
-                enableHeightMessages: false,
-                includeFontFaces: true
-            )
+        if let cached = renderedHTMLCache.object(forKey: cacheKey) {
+            html = cached as String
+        } else {
+            switch experiment {
+            case .plainText:
+                html = plainTextHTML(rawText: rawText)
+            case .inlineJavaScript:
+                html = try inlineJavaScriptHTML(
+                    rawText: rawText,
+                    enableHeightMessages: false
+                )
+            case .inlineJavaScriptWithHeight:
+                html = try inlineJavaScriptHTML(
+                    rawText: rawText,
+                    enableHeightMessages: true
+                )
+            case .katexNoFonts:
+                html = try productionHTML(
+                    rawText: rawText,
+                    macros: MathPreambleCompiler.compile(preamble).macros,
+                    assetDirectoryURL: assetDirectoryURL,
+                    enableHeightMessages: true,
+                    includeFontFaces: false
+                )
+            case .production:
+                html = try productionHTML(
+                    rawText: rawText,
+                    macros: MathPreambleCompiler.compile(preamble).macros,
+                    assetDirectoryURL: assetDirectoryURL,
+                    enableHeightMessages: true,
+                    includeFontFaces: true
+                )
+            case .productionNoHeight:
+                html = try productionHTML(
+                    rawText: rawText,
+                    macros: MathPreambleCompiler.compile(preamble).macros,
+                    assetDirectoryURL: assetDirectoryURL,
+                    enableHeightMessages: false,
+                    includeFontFaces: true
+                )
+            }
+            renderedHTMLCache.setObject(html as NSString, forKey: cacheKey, cost: html.utf8.count)
         }
 
         return MathRenderedDocument(
             html: html,
             baseURL: assetDirectoryURL,
             experiment: experiment,
-            enablesHeightMessages: experiment.enablesHeightMessages
+            enablesHeightMessages: experiment.enablesHeightMessages,
+            diagnosticsEnabled: debugSettings.diagnosticsEnabled
         )
     }
 
@@ -277,6 +311,7 @@ enum MathNoteRenderer {
 
     private static func productionHTML(
         rawText: String,
+        macros: [String: String],
         assetDirectoryURL: URL,
         enableHeightMessages: Bool,
         includeFontFaces: Bool
@@ -288,6 +323,7 @@ enum MathNoteRenderer {
         let katexScript = try assetContents(named: "katex.min.js", in: assetDirectoryURL)
         let autoRenderScript = try assetContents(named: "auto-render.min.js", in: assetDirectoryURL)
         let escapedText = try jsonLiteral(for: rawText)
+        let encodedMacros = try jsonLiteral(for: macros)
         let initialFallbackHTML = escapedHTML(rawText)
         let expectedMathMarkup = hasMathMarkup(in: rawText) ? "true" : "false"
         let heightHook = heightMessageHook(enabled: enableHeightMessages)
@@ -329,6 +365,7 @@ enum MathNoteRenderer {
           <div id="note-root">\(initialFallbackHTML)</div>
           <script>
             const rawText = \(escapedText);
+            const macros = \(encodedMacros);
             const expectedMathMarkup = \(expectedMathMarkup);
             const root = document.getElementById("note-root");
             root.textContent = rawText;
@@ -361,6 +398,7 @@ enum MathNoteRenderer {
                 strict: "ignore",
                 trust: false,
                 errorColor: "inherit"
+                ,macros: macros
               });
 
               const katexCount = document.querySelectorAll(".katex").length;
@@ -391,7 +429,7 @@ enum MathNoteRenderer {
         }
 
         body {
-          color: #1f2328;
+          color: CanvasText;
           font: 16px/1.6 -apple-system, BlinkMacSystemFont, "SF Pro Text", sans-serif;
         }
 
@@ -459,12 +497,18 @@ enum MathNoteRenderer {
     private static func assetContents(named fileName: String, in directoryURL: URL) throws -> String {
         let assetURL = directoryURL.appendingPathComponent(fileName)
 
+        if let cached = assetCache.object(forKey: assetURL as NSURL) {
+            return cached as String
+        }
+
         guard FileManager.default.fileExists(atPath: assetURL.path) else {
             throw MathNoteRendererError.missingAsset(fileName)
         }
 
         do {
-            return try String(contentsOf: assetURL, encoding: .utf8)
+            let contents = try String(contentsOf: assetURL, encoding: .utf8)
+            assetCache.setObject(contents as NSString, forKey: assetURL as NSURL)
+            return contents
         } catch {
             throw MathNoteRendererError.unreadableAsset(fileName)
         }
@@ -479,7 +523,24 @@ enum MathNoteRenderer {
             throw MathNoteRendererError.unreadableAsset("json literal")
         }
 
-        return String(encoded.dropFirst().dropLast())
+        return scriptSafeJSON(String(encoded.dropFirst().dropLast()))
+    }
+
+    private static func jsonLiteral(for dictionary: [String: String]) throws -> String {
+        let data = try JSONSerialization.data(withJSONObject: dictionary, options: [.sortedKeys])
+        guard let encoded = String(data: data, encoding: .utf8) else {
+            throw MathNoteRendererError.unreadableAsset("macro definitions")
+        }
+        return scriptSafeJSON(encoded)
+    }
+
+    private static func scriptSafeJSON(_ encoded: String) -> String {
+        encoded
+            .replacingOccurrences(of: "<", with: "\\u003C")
+            .replacingOccurrences(of: ">", with: "\\u003E")
+            .replacingOccurrences(of: "&", with: "\\u0026")
+            .replacingOccurrences(of: "\u{2028}", with: "\\u2028")
+            .replacingOccurrences(of: "\u{2029}", with: "\\u2029")
     }
 
     private static func escapedHTML(_ string: String) -> String {
@@ -513,6 +574,7 @@ enum MathNoteRenderer {
 
 struct MathNoteView: View {
     let rawText: String
+    let preamble: String
     let maximumContentHeight: CGFloat?
 
     private let debugSettings = MathRendererDebugSettings.current()
@@ -521,8 +583,9 @@ struct MathNoteView: View {
     @State private var contentHeight: CGFloat = 96
     @State private var diagnostics = MathRendererDiagnostics.initial(for: .production)
 
-    init(rawText: String, maximumContentHeight: CGFloat? = nil) {
+    init(rawText: String, preamble: String = "", maximumContentHeight: CGFloat? = nil) {
         self.rawText = rawText
+        self.preamble = preamble
         self.maximumContentHeight = maximumContentHeight
     }
 
@@ -534,6 +597,7 @@ struct MathNoteView: View {
                         html: renderedDocument.html,
                         baseURL: renderedDocument.baseURL,
                         enablesHeightMessages: renderedDocument.enablesHeightMessages,
+                        diagnosticsEnabled: renderedDocument.diagnosticsEnabled,
                         diagnostics: $diagnostics,
                         contentHeight: $contentHeight
                     )
@@ -552,10 +616,11 @@ struct MathNoteView: View {
                     .accessibilityIdentifier("renderer-diagnostics")
             }
         }
-        .task(id: rawText) {
+        .task(id: rawText + "\u{0}" + preamble) {
             do {
                 renderedDocument = try MathNoteRenderer.renderedDocument(
                     rawText: rawText,
+                    preamble: preamble,
                     debugSettings: debugSettings
                 )
                 if let renderedDocument {
@@ -591,11 +656,16 @@ private struct MathNoteWebView: NSViewRepresentable {
     let html: String
     let baseURL: URL
     let enablesHeightMessages: Bool
+    let diagnosticsEnabled: Bool
     @Binding var diagnostics: MathRendererDiagnostics
     @Binding var contentHeight: CGFloat
 
     func makeCoordinator() -> Coordinator {
-        Coordinator(diagnostics: $diagnostics, contentHeight: $contentHeight)
+        Coordinator(
+            diagnostics: $diagnostics,
+            contentHeight: $contentHeight,
+            diagnosticsEnabled: diagnosticsEnabled
+        )
     }
 
     func makeNSView(context: Context) -> WKWebView {
@@ -634,10 +704,16 @@ private struct MathNoteWebView: NSViewRepresentable {
         @Binding var contentHeight: CGFloat
         var lastLoadedHTML: String?
         private var sampleToken = 0
+        private let diagnosticsEnabled: Bool
 
-        init(diagnostics: Binding<MathRendererDiagnostics>, contentHeight: Binding<CGFloat>) {
+        init(
+            diagnostics: Binding<MathRendererDiagnostics>,
+            contentHeight: Binding<CGFloat>,
+            diagnosticsEnabled: Bool
+        ) {
             _diagnostics = diagnostics
             _contentHeight = contentHeight
+            self.diagnosticsEnabled = diagnosticsEnabled
         }
 
         func beginLoad(experiment: String) {
@@ -666,8 +742,10 @@ private struct MathNoteWebView: NSViewRepresentable {
 
         func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
             diagnostics.lastEvent = "didFinish"
-            sampleDOM(in: webView, event: "didFinish")
-            scheduleSampling(in: webView, token: sampleToken, remainingSamples: 8)
+            if diagnosticsEnabled {
+                sampleDOM(in: webView, event: "didFinish")
+                scheduleSampling(in: webView, token: sampleToken, remainingSamples: 2)
+            }
         }
 
         func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {
