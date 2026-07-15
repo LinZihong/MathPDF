@@ -31,6 +31,11 @@ a required build, test, renderer, entitlement, or release gate.
 ## Local Interaction Policy
 
 - Unit tests and build-for-testing are the default automated checks.
+- The shared `MathPDF` scheme keeps app-hosted unit and UI test targets
+  nonparallel and supplies `-NSDocumentReopenSavedDocuments NO` plus
+  `-ApplePersistenceIgnoreState YES` to test actions. Do not remove those
+  guards: parallel test hosts previously triggered an unexpected Documents
+  permission sheet.
 - Do not run UI-test automation on the user's active desktop unless the user
   explicitly approves it for that session. Compile the UI-test target with
   `build-for-testing`, then prefer a focused Computer Use pass for local visual

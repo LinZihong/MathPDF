@@ -12,7 +12,12 @@ used.
 
 ## Committed and validated baseline
 
-- `eaf9ce1` is the last committed checkpoint.
+- `eaf9ce1` is the recoverable product checkpoint for the broader reader
+  overhaul.
+- `388970b` makes both app-hosted test targets nonparallel and disables
+  document/window restoration for test actions. A signed ten-test
+  `MathPDFDocumentTests` run completed without a Documents permission prompt,
+  proving the permission-stall fix.
 - Native per-document windows provide outlines, Highlights and Notes, search,
   page entry, grouped zoom controls, printing, Save As, Revert, annotation
   authoring, undo, and document autosave.
@@ -41,21 +46,36 @@ used.
   PDFKit's incremental append path, post-save semantic validation, byte-identical
   no-op snapshots, per-revision snapshot caching, and read-only handling for
   encrypted, signed, non-commentable, or otherwise unsupported edits.
-- This interoperability delta is implemented but uncommitted and has not passed
-  a fresh signed test run. Do not describe it as validated or shipped.
+- After whole-second `/M` normalization, the permission-clean signed document
+  suite passed 7/10 and exposed real PDFKit append corruption across sequential
+  writes in one process: a created `/Text` note disappeared, edited highlight
+  `/Contents` became nil, and an unrelated page bleed box drifted. The result
+  bundle is
+  `.build/SignedDerivedData/Logs/Test/Test-MathPDF-2026.07.14_20-04-15--0700.xcresult`.
+- Independent review therefore blocks the undocumented PDFKit append writer.
+  Isolated green tests are not acceptance evidence for this backend.
+- The audit also confirmed incomplete owner-to-popup edge validation,
+  delete/undo popup metadata loss, locked-popup mutation, read-only creation
+  crashes, and unsafe orphan inference.
+- The requested interaction redesign remains unimplemented: the detached note
+  inspector/popover and current toolbar are not acceptance-ready.
 
 ## Open validation gates
 
-- The UI-test target compiles, but the last approved run reached `Running
-  Background` after the Mac locked; no product assertion ran. When the desktop
-  is unlocked, run the three UI tests from `/tmp/MathPDF-DerivedData`.
+- Rerun the signed document suite after every serializer correction, then the
+  full signed unit suite.
+- Build and run the three UI tests serially from
+  `/tmp/MathPDF-DerivedData`; their shared scheme now suppresses document
+  restoration, but the fixture and explicit-termination rules still apply.
 - Visually inspect a research excerpt under `/tmp/MathPDF-Fixtures`, obtain the
-  independent design ship verdict, and quit every MathPDF instance.
+  independent design ship verdict after the interaction redesign, and quit
+  every MathPDF instance.
 - Apply `docs/TESTING.md` exactly. `TestPDFs/` remains read-only source material
   and is never a GUI launch target.
 
 ## Next safe action
 
-Run the focused signed interoperability tests and then the full signed unit
-suite, outside the agent sandbox when signing resources require it. Do not begin
-the remaining GUI gates until the desktop is unlocked and execution is approved.
+Replace PDFKit serialization behind an `AnnotationPersistenceBackend` boundary
+with a standards-aware low-level writer, retain PDFKit for viewing, and rerun
+the signed multi-document/repeated-save semantic corpus before committing the
+compatibility slice.
