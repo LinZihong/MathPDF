@@ -518,6 +518,67 @@ struct MathPDFDocumentTests {
     }
 
     @Test
+    func oneSidedImportedPopupGraphsRepairWithoutChangingOwnerContents() throws {
+        for shape in [PopupGraphShape.ownerOnly, .parentOnly] {
+            let source = TestPDFFactory.rawPopupGraph(shape: shape)
+            let document = try MathPDFDocument(data: source)
+            let page = try #require(document.pdfDocument.page(at: 0))
+            let highlight = try #require(page.annotations.first { $0.type == "Highlight" })
+            #expect(highlight.contents == "owner note")
+            #expect(document.editingError == nil)
+
+            document.preamble = #"\newcommand{\Q}{\mathbb{Q}}"#
+            let saved = try document.serializedData()
+            let reloaded = try MathPDFDocument(data: saved)
+            let savedPage = try #require(reloaded.pdfDocument.page(at: 0))
+            let savedHighlight = try #require(
+                savedPage.annotations.first { $0.type == "Highlight" }
+            )
+            let savedPopup = try #require(savedHighlight.popup)
+            #expect(savedHighlight.contents == "owner note")
+            #expect((savedPopup.value(forAnnotationKey: .parent) as? PDFAnnotation) === savedHighlight)
+        }
+    }
+
+    @Test
+    func deleteUndoPreservesImportedPopupMetadataWithoutInventingNames() throws {
+        let source = TestPDFFactory.rawPopupGraph(
+            shape: .reciprocal,
+            includeNames: false,
+            includePopupSentinels: true
+        )
+        let originalState = try TestPDFFactory.rawPopupState(in: source)
+        let document = try MathPDFDocument(data: source)
+        let page = try #require(document.pdfDocument.page(at: 0))
+        let highlight = try #require(page.annotations.first { $0.type == "Highlight" })
+        let undoManager = UndoManager()
+        undoManager.groupsByEvent = false
+        undoManager.beginUndoGrouping()
+        document.removeAnnotation(highlight, undoManager: undoManager)
+        undoManager.endUndoGrouping()
+        undoManager.undo()
+
+        #expect(highlight.contents == "owner note")
+        let saved = try document.serializedData()
+        let savedState = try TestPDFFactory.rawPopupState(in: saved)
+        #expect(savedState == originalState)
+    }
+
+    @Test
+    func duplicateDurableAnnotationNamesFailClosed() throws {
+        let document = try MathPDFDocument(data: TestPDFFactory.rawDuplicateNameGraph())
+        #expect(document.editingError?.localizedDescription.contains("not unique") == true)
+        document.preamble = #"\newcommand{\Q}{\mathbb{Q}}"#
+
+        do {
+            _ = try document.serializedData()
+            Issue.record("A duplicate /NM graph was serialized instead of rejected.")
+        } catch {
+            #expect(error.localizedDescription.contains("not unique"))
+        }
+    }
+
+    @Test
     func interleavedDocumentsNeverLeakAnnotationOrPreambleState() throws {
         let firstDocument = MathPDFDocument()
         let secondDocument = MathPDFDocument()
@@ -835,6 +896,22 @@ struct ReaderAnnotationOwnershipTests {
     }
 }
 
+private enum PopupGraphShape {
+    case ownerOnly
+    case parentOnly
+    case reciprocal
+}
+
+private struct RawPopupState: Equatable {
+    let contents: String?
+    let modificationDate: String?
+    let flags: Int
+    let isOpen: Bool
+    let hasAppearance: Bool
+    let sentinel: String?
+    let hasName: Bool
+}
+
 @MainActor
 private enum TestPDFFactory {
     static func document(pageCount: Int) -> PDFDocument {
@@ -878,6 +955,141 @@ private enum TestPDFFactory {
         let annotation = PDFAnnotation(bounds: bounds, forType: subtype, withProperties: nil)
         annotation.contents = contents
         return annotation
+    }
+
+    static func rawPopupGraph(
+        shape: PopupGraphShape,
+        includeNames: Bool = true,
+        includePopupSentinels: Bool = false
+    ) -> Data {
+        let ownerEdge = shape == .parentOnly ? "" : "/Popup 6 0 R"
+        let parentEdge = shape == .ownerOnly ? "" : "/Parent 5 0 R"
+        let ownerName = includeNames ? "/NM (raw-owner)" : ""
+        let popupName = includeNames ? "/NM (raw-popup)" : ""
+        let popupSentinels = includePopupSentinels
+            ? "/Contents (popup-private) /M (D:20260714010101Z) /F 4 /Open true /AP << /N 7 0 R >> /XMathPDFSentinel (keep-me)"
+            : ""
+
+        var objects = [
+            "<< /Type /Catalog /Pages 2 0 R >>",
+            "<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+            "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << >> /Contents 4 0 R /Annots [5 0 R 6 0 R] >>",
+            "<< /Length 0 >>\nstream\n\nendstream",
+            "<< /Type /Annot /Subtype /Highlight /Rect [80 600 240 618] /QuadPoints [80 618 240 618 80 600 240 600] /Contents (owner note) /C [1 1 0] \(ownerName) \(ownerEdge) >>",
+            "<< /Type /Annot /Subtype /Popup /Rect [250 500 430 620] \(popupName) \(parentEdge) \(popupSentinels) >>",
+        ]
+        if includePopupSentinels {
+            objects.append(
+                "<< /Type /XObject /Subtype /Form /BBox [0 0 10 10] /Resources << >> /Length 0 >>\nstream\n\nendstream"
+            )
+        }
+        return rawPDF(objects: objects)
+    }
+
+    static func rawDuplicateNameGraph() -> Data {
+        rawPDF(objects: [
+            "<< /Type /Catalog /Pages 2 0 R >>",
+            "<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+            "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << >> /Contents 4 0 R /Annots [5 0 R 6 0 R 7 0 R 8 0 R] >>",
+            "<< /Length 0 >>\nstream\n\nendstream",
+            "<< /Type /Annot /Subtype /Highlight /Rect [80 600 240 618] /Contents (first) /NM (duplicate-owner) /Popup 6 0 R >>",
+            "<< /Type /Annot /Subtype /Popup /Rect [250 500 430 620] /NM (popup-one) /Parent 5 0 R >>",
+            "<< /Type /Annot /Subtype /Highlight /Rect [80 560 240 578] /Contents (second) /NM (duplicate-owner) /Popup 8 0 R >>",
+            "<< /Type /Annot /Subtype /Popup /Rect [250 440 430 560] /NM (popup-two) /Parent 7 0 R >>",
+        ])
+    }
+
+    static func rawPopupState(in data: Data) throws -> RawPopupState {
+        let provider = try #require(CGDataProvider(data: data as CFData))
+        let document = try #require(CGPDFDocument(provider))
+        let page = try #require(document.page(at: 1))
+        let pageDictionary = try #require(page.dictionary)
+        var annotations: CGPDFArrayRef?
+        let hasAnnotations = "Annots".withCString {
+            CGPDFDictionaryGetArray(pageDictionary, $0, &annotations)
+        }
+        #expect(hasAnnotations)
+        let annotationArray = try #require(annotations)
+
+        for index in 0..<CGPDFArrayGetCount(annotationArray) {
+            var dictionary: CGPDFDictionaryRef?
+            guard CGPDFArrayGetDictionary(annotationArray, index, &dictionary),
+                  let dictionary,
+                  dictionaryName(dictionary, key: "Subtype") == "Popup"
+            else { continue }
+
+            var flags: CGPDFInteger = 0
+            _ = "F".withCString { CGPDFDictionaryGetInteger(dictionary, $0, &flags) }
+            var isOpen: CGPDFBoolean = 0
+            _ = "Open".withCString { CGPDFDictionaryGetBoolean(dictionary, $0, &isOpen) }
+            var appearance: CGPDFDictionaryRef?
+            let hasAppearance = "AP".withCString {
+                CGPDFDictionaryGetDictionary(dictionary, $0, &appearance)
+            }
+            var nameObject: CGPDFObjectRef?
+            let hasName = "NM".withCString {
+                CGPDFDictionaryGetObject(dictionary, $0, &nameObject)
+            }
+            return RawPopupState(
+                contents: dictionaryString(dictionary, key: "Contents"),
+                modificationDate: dictionaryString(dictionary, key: "M"),
+                flags: flags,
+                isOpen: isOpen != 0,
+                hasAppearance: hasAppearance,
+                sentinel: dictionaryString(dictionary, key: "XMathPDFSentinel"),
+                hasName: hasName
+            )
+        }
+        Issue.record("The raw fixture has no Popup annotation.")
+        return RawPopupState(
+            contents: nil,
+            modificationDate: nil,
+            flags: 0,
+            isOpen: false,
+            hasAppearance: false,
+            sentinel: nil,
+            hasName: false
+        )
+    }
+
+    private static func rawPDF(objects: [String]) -> Data {
+        var data = Data("%PDF-1.7\n".utf8)
+        var offsets = [0]
+        for (index, object) in objects.enumerated() {
+            offsets.append(data.count)
+            data.append(contentsOf: "\(index + 1) 0 obj\n\(object)\nendobj\n".utf8)
+        }
+        let xrefOffset = data.count
+        data.append(contentsOf: "xref\n0 \(objects.count + 1)\n".utf8)
+        data.append(contentsOf: "0000000000 65535 f \n".utf8)
+        for offset in offsets.dropFirst() {
+            data.append(contentsOf: String(format: "%010d 00000 n \n", offset).utf8)
+        }
+        data.append(contentsOf: "trailer\n<< /Size \(objects.count + 1) /Root 1 0 R >>\nstartxref\n\(xrefOffset)\n%%EOF\n".utf8)
+        return data
+    }
+
+    private static func dictionaryName(
+        _ dictionary: CGPDFDictionaryRef,
+        key: String
+    ) -> String? {
+        var value: UnsafePointer<CChar>?
+        let found = key.withCString {
+            CGPDFDictionaryGetName(dictionary, $0, &value)
+        }
+        return found ? value.map(String.init(cString:)) : nil
+    }
+
+    private static func dictionaryString(
+        _ dictionary: CGPDFDictionaryRef,
+        key: String
+    ) -> String? {
+        var value: CGPDFStringRef?
+        let found = key.withCString {
+            CGPDFDictionaryGetString(dictionary, $0, &value)
+        }
+        guard found, let value else { return nil }
+        return CGPDFStringCopyTextString(value) as String?
     }
 }
 

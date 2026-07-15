@@ -320,7 +320,7 @@ final class MathPDFDocument: ReferenceFileDocument, ObservableObject {
             page.addAnnotation(popup)
             persistenceSession.markRestored(popup)
             PDFAnnotationInteroperability.attach(popup, to: annotation)
-            persistenceSession.markPopupEdge(owner: annotation, popup: popup)
+            persistenceSession.restorePopupEdge(owner: annotation, popup: popup)
         } else {
             updatePopupCompanion(for: annotation)
         }

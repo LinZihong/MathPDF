@@ -180,6 +180,7 @@ InventoryResult inventoryAnnotations(QPDF& pdf, bool requireReciprocal = false)
     NSMutableArray *pagesJSON = [NSMutableArray array];
     std::vector<AnnotationNode> nodes;
     std::map<QPDFObjGen, size_t> nodeByReference;
+    std::map<std::string, QPDFObjGen> referenceByName;
     bool supported = true;
     NSString *failure = @"";
 
@@ -224,6 +225,13 @@ InventoryResult inventoryAnnotations(QPDF& pdf, bool requireReciprocal = false)
                     if (!nodeByReference.emplace(reference, index).second) {
                         supported = false;
                         failure = @"An annotation object is shared by multiple page entries.";
+                    }
+                }
+                auto name = annotation.getKey("/NM");
+                if (name.isString() && !name.getUTF8Value().empty()) {
+                    if (!referenceByName.emplace(name.getUTF8Value(), reference).second) {
+                        supported = false;
+                        failure = @"Annotation /NM identifiers are not unique.";
                     }
                 }
                 [annotationsJSON addObject:annotationDictionary(node)];

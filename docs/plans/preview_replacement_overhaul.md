@@ -45,9 +45,12 @@ preamble format.
   PDFKit mutations, and requires reciprocal output edges. The orphan-popup
   failures were traced to one-pass discovery of PDFKit-created Text popups and
   corrected with two-pass binding plus explicit edge registration.
-- The production-host document suite passes 14/14 and the full signed unit suite
-  passes 30/30 without a Documents prompt. The adversarial revision corpus also
+- The production-host document suite passes 17/17 and the full signed unit suite
+  passes 33/33 without a Documents prompt. The adversarial revision corpus also
   found and locked down PDFKit clearing owner contents when `popup` is detached.
+- Raw fixtures now prove both one-sided import repairs, preservation-neutral
+  imported delete/undo for popup contents, dates, flags, open state, appearance,
+  unknown keys, and absent names, plus duplicate `/NM` fail-closed behavior.
 - The detached note inspector/popover and toolbar remain the old interaction and
   must be replaced. The design direction is one context-preserving annotation
   surface with restrained color continuity and a quieter native hierarchy.
@@ -92,8 +95,8 @@ rules.
       untracked graph mutation.
 - [x] Expand popup graph, repeated-save, color, undo, and read-only
       regression coverage; run the full signed `MathPDFTests` suite.
-- [ ] Validate realistic Preview-authored input, one-sided/orphan conflict
-      handling, annotation flags, and an independent raw-parser matrix.
+- [ ] Validate realistic Preview-authored input, orphan/conflicting graph
+      handling, locked annotation flags, and a third-party raw-parser matrix.
 - [ ] Review the compatibility impact and commit the reciprocal-popup slice if
       the semantic gates pass.
 - [ ] Replace the detached note surfaces and toolbar; add palette continuity and
@@ -134,13 +137,16 @@ Passed:
   expanded corpus covers repeated snapshots, delete/undo/redo, identical
   annotations, color changes, interleaved documents, and fail-closed untracked
   mutation.
-- 2026-07-14: the full signed production-host `MathPDFTests` suite passed 30/30
+- 2026-07-14: after independent review, raw fixtures and repairs raised the
+  signed document suite to 17/17. Both one-sided graph directions, imported
+  popup sentinel preservation, and duplicate `/NM` rejection pass.
+- 2026-07-14: the full signed production-host `MathPDFTests` suite passed 33/33
   in seven suites without a Documents prompt.
 
 Not yet validated:
 
-- Preview-authored raw corpus comparison, independent-parser confirmation,
-  one-sided/orphan conflict cases, and annotation-flag preservation.
+- Preview-authored raw corpus comparison, third-party parser confirmation,
+  orphan/conflicting graph cases, and locked-annotation behavior.
 - The integrated annotation interaction and toolbar redesign.
 - Idle autosave, Save As, Revert, close review, failure UI, external-file
   conflicts, real multi-window routing, accessibility configurations, and large-

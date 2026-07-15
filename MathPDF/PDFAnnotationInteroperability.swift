@@ -3,22 +3,10 @@ import Foundation
 import PDFKit
 
 enum PDFAnnotationInteroperabilityError: LocalizedError {
-    case encryptedDocument
-    case commentingNotAllowed
-    case signedDocument
-    case unsupportedAppendWriter
     case invalidSerializedDocument(String)
 
     var errorDescription: String? {
         switch self {
-        case .encryptedDocument:
-            "MathPDF can read this encrypted PDF, but cannot safely edit its annotations yet."
-        case .commentingNotAllowed:
-            "This PDF does not permit annotation changes."
-        case .signedDocument:
-            "MathPDF will not edit a signed PDF until signature-preserving saves are supported."
-        case .unsupportedAppendWriter:
-            "This version of PDFKit cannot safely preserve this PDF while saving annotations."
         case let .invalidSerializedDocument(reason):
             "MathPDF refused to save because annotation compatibility validation failed: \(reason)"
         }
@@ -31,24 +19,8 @@ struct PDFPopupDiskState {
 }
 
 enum PDFAnnotationInteroperability {
-    private static let appendMode = PDFDocumentWriteOption(
-        rawValue: "PDFDocumentWriteOption_UseAppendMode"
-    )
     private static let noViewFlag = 1 << 5
     private static let restrictedAnnotationFlags = (1 << 6) | (1 << 7) | (1 << 9)
-
-    static func documentEditingError(for document: PDFDocument, sourceData: Data) -> Error? {
-        if document.isLocked || document.isEncrypted {
-            return PDFAnnotationInteroperabilityError.encryptedDocument
-        }
-        if !document.allowsCommenting {
-            return PDFAnnotationInteroperabilityError.commentingNotAllowed
-        }
-        if sourceData.range(of: Data("/ByteRange".utf8)) != nil {
-            return PDFAnnotationInteroperabilityError.signedDocument
-        }
-        return nil
-    }
 
     static func annotationAllowsEditing(_ annotation: PDFAnnotation) -> Bool {
         rawFlags(of: annotation) & restrictedAnnotationFlags == 0
@@ -83,70 +55,6 @@ enum PDFAnnotationInteroperability {
             setRawFlags(state.flags | noViewFlag, on: popup)
             popup.isOpen = false
         }
-    }
-
-    static func preparePopupGraphsForSerialization(
-        in document: PDFDocument,
-        states: [ObjectIdentifier: PDFPopupDiskState]
-    ) {
-        let pagePopups = popupAnnotations(in: document)
-        for popup in pagePopups {
-            let state = states[ObjectIdentifier(popup)] ?? PDFPopupDiskState(
-                flags: rawFlags(of: popup) & ~noViewFlag,
-                isOpen: false
-            )
-            setRawFlags(state.flags, on: popup)
-            popup.isOpen = state.isOpen
-        }
-
-        // PDFKit's append writer is sensitive to presentation-flag and color
-        // mutations. Rebuilding each reciprocal edge twice is deliberate: it
-        // prevents the writer from retaining a stale internal annotation clone.
-        for owner in ownerAnnotations(in: document) {
-            guard let popup = owner.popup, popup.page === owner.page else { continue }
-            owner.popup = nil
-            owner.popup = popup
-            owner.popup = nil
-            owner.popup = popup
-            _ = popup.setValue(owner, forAnnotationKey: .parent)
-        }
-    }
-
-    static func serializedAppend(
-        document: PDFDocument,
-        originalData: Data
-    ) throws -> Data {
-        let expected = DocumentSemantics(document: document)
-        guard let candidate = document.dataRepresentation(options: [appendMode: true]) else {
-            throw PDFAnnotationInteroperabilityError.unsupportedAppendWriter
-        }
-        try validate(
-            candidate: candidate,
-            originalData: originalData,
-            expected: expected
-        )
-        return candidate
-    }
-
-    static func inferUniquePopupCompanion(for owner: PDFAnnotation) -> PDFAnnotation? {
-        guard
-            owner.type?.caseInsensitiveCompare("Highlight") == .orderedSame,
-            let page = owner.page
-        else { return nil }
-
-        let candidates = page.annotations.filter { annotation in
-            guard annotation.type?.caseInsensitiveCompare("Popup") == .orderedSame else {
-                return false
-            }
-            guard annotationColor(annotation) == annotationColor(owner) else { return false }
-            let expected = popupBounds(for: owner, on: page)
-            return approximatelyEqual(annotation.bounds, expected, tolerance: 1.25)
-        }
-        guard candidates.count == 1, let popup = candidates.first else { return nil }
-        let alreadyOwned = page.annotations.contains { annotation in
-            annotation !== owner && annotation.popup === popup
-        }
-        return alreadyOwned ? nil : popup
     }
 
     static func makePopupCompanion(for owner: PDFAnnotation, on page: PDFPage) -> PDFAnnotation {
@@ -206,10 +114,6 @@ enum PDFAnnotationInteroperability {
         }
     }
 
-    static func annotationFingerprint(_ annotation: PDFAnnotation, pageIndex: Int) -> String {
-        AnnotationSemantics(annotation: annotation, pageIndex: pageIndex).description
-    }
-
     static func validate(serializedData: Data, against expectedDocument: PDFDocument) throws {
         guard let reloaded = PDFDocument(data: serializedData) else {
             throw PDFAnnotationInteroperabilityError.invalidSerializedDocument(
@@ -231,49 +135,10 @@ enum PDFAnnotationInteroperability {
         }
     }
 
-    private static func validate(
-        candidate: Data,
-        originalData: Data,
-        expected: DocumentSemantics
-    ) throws {
-        guard candidate.count >= originalData.count, candidate.starts(with: originalData) else {
-            throw PDFAnnotationInteroperabilityError.invalidSerializedDocument(
-                "PDFKit did not produce an incremental append"
-            )
-        }
-        guard let reloaded = PDFDocument(data: candidate) else {
-            throw PDFAnnotationInteroperabilityError.invalidSerializedDocument(
-                "the serialized PDF could not be reopened"
-            )
-        }
-        let actual = DocumentSemantics(document: reloaded)
-        guard expected.pageCount == actual.pageCount else {
-            throw PDFAnnotationInteroperabilityError.invalidSerializedDocument("page count changed")
-        }
-        guard expected.pages == actual.pages else {
-            let reason = expected.firstPageDifference(from: actual)
-                ?? "page geometry or annotation semantics changed"
-            throw PDFAnnotationInteroperabilityError.invalidSerializedDocument(
-                reason
-            )
-        }
-        guard expected.keywords == actual.keywords else {
-            throw PDFAnnotationInteroperabilityError.invalidSerializedDocument("PDF Keywords changed")
-        }
-    }
-
     private static func popupAnnotations(in document: PDFDocument) -> [PDFAnnotation] {
         (0..<document.pageCount).flatMap { pageIndex in
             document.page(at: pageIndex)?.annotations.filter {
                 $0.type?.caseInsensitiveCompare("Popup") == .orderedSame
-            } ?? []
-        }
-    }
-
-    private static func ownerAnnotations(in document: PDFDocument) -> [PDFAnnotation] {
-        (0..<document.pageCount).flatMap { pageIndex in
-            document.page(at: pageIndex)?.annotations.filter {
-                $0.type?.caseInsensitiveCompare("Popup") != .orderedSame && $0.popup != nil
             } ?? []
         }
     }
@@ -297,20 +162,6 @@ enum PDFAnnotationInteroperability {
         _ = annotation.setValue(NSNumber(value: flags), forAnnotationKey: .flags)
     }
 
-    private static func annotationColor(_ annotation: PDFAnnotation) -> ColorSemantics {
-        ColorSemantics(annotation.color)
-    }
-
-    private static func approximatelyEqual(
-        _ lhs: CGRect,
-        _ rhs: CGRect,
-        tolerance: CGFloat
-    ) -> Bool {
-        abs(lhs.minX - rhs.minX) <= tolerance
-            && abs(lhs.minY - rhs.minY) <= tolerance
-            && abs(lhs.width - rhs.width) <= tolerance
-            && abs(lhs.height - rhs.height) <= tolerance
-    }
 }
 
 private struct DocumentSemantics {

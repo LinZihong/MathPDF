@@ -57,15 +57,21 @@ used.
 - The writer owns its annotation identity and reciprocal edge graph instead of
   trusting PDFKit's transient popup topology. It rejects unregistered runtime
   mutations and validates exact output edges before returning a snapshot.
-- The normal signed production-host document suite passes 14/14. It covers
+- The normal signed production-host document suite passes 17/17. It covers
   standalone Text notes, highlight notes, unrelated metadata and annotations,
   repeated revisions, delete/undo/redo, identical geometry and contents,
   color changes, multi-document isolation, no-op bytes, and fail-closed
-  untracked mutation. The full signed production-host unit suite passes 30/30.
+  untracked mutation. Raw fixtures additionally cover both one-sided popup
+  directions, imported popup metadata preservation, and duplicate `/NM`
+  rejection. The full signed production-host unit suite passes 33/33.
   Neither run requested Documents access, and the host exited afterward.
 - The adversarial lifecycle corpus exposed a PDFKit behavior in which assigning
   `annotation.popup = nil` clears the owner's `contents`. Detach, reattach, and
   color-change paths now preserve owner text explicitly, with regressions.
+- An independent post-commit review found three P1 gaps. The follow-up preserves
+  owner contents while repairing one-sided imports, makes imported delete/undo
+  neutral to `/Contents`, `/M`, `/F`, `/Open`, `/AP`, unknown keys, and absent
+  `/NM`, and fails closed on duplicate durable annotation names.
 - The earlier PDFKit serializer probe dropped reciprocal popup topology, so the
   undocumented append backend is not the active writer. That is not a proof
   that every controlled PDFKit-to-Preview workflow must fail; a narrowly scoped

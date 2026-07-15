@@ -144,6 +144,7 @@ final class PDFAnnotationPersistenceSession {
     private var annotationByID: [UUID: PDFAnnotation] = [:]
     private var dirtyFields: [UUID: Set<PDFAnnotationDirtyField>] = [:]
     private var popupEdges: Set<PDFAnnotationWriteRequest.Edge> = []
+    private var importedPopupEdges: Set<PDFAnnotationWriteRequest.Edge> = []
     private var deletedIDs: Set<UUID> = []
     private var detachedPopupByOwner: [UUID: PDFAnnotation] = [:]
     private var metadataDirty = false
@@ -163,6 +164,7 @@ final class PDFAnnotationPersistenceSession {
                 return
             }
             try bind(document: document, to: inspection)
+            importedPopupEdges = popupEdges
             repairOneSidedRuntimeEdges(using: inspection, document: document)
         } catch {
             editingError = error
@@ -232,14 +234,34 @@ final class PDFAnnotationPersistenceSession {
         detachedPopupByOwner.removeValue(forKey: ownerBinding.id)
     }
 
+    func restorePopupEdge(owner: PDFAnnotation, popup: PDFAnnotation) {
+        let ownerBinding = ensureBinding(for: owner)
+        let popupBinding = ensureBinding(for: popup)
+        let edge = PDFAnnotationWriteRequest.Edge(
+            owner: ownerBinding.id,
+            popup: popupBinding.id
+        )
+        guard importedPopupEdges.contains(edge) else {
+            markPopupEdge(owner: owner, popup: popup)
+            return
+        }
+
+        popupEdges = Set(popupEdges.filter {
+            $0.owner != ownerBinding.id && $0.popup != popupBinding.id
+        })
+        popupEdges.insert(edge)
+        deletedIDs.remove(popupBinding.id)
+        detachedPopupByOwner.removeValue(forKey: ownerBinding.id)
+    }
+
     func detachPopup(_ popup: PDFAnnotation, from owner: PDFAnnotation) {
         let ownerBinding = ensureBinding(for: owner)
         let popupBinding = ensureBinding(for: popup)
         popupEdges.remove(.init(owner: ownerBinding.id, popup: popupBinding.id))
         detachedPopupByOwner[ownerBinding.id] = popup
         deletedIDs.insert(popupBinding.id)
-        mark(ownerBinding, [.popup])
-        mark(popupBinding, [.parent])
+        dirtyFields[ownerBinding.id, default: []].insert(.popup)
+        dirtyFields[popupBinding.id, default: []].insert(.parent)
     }
 
     func takeDetachedPopup(for owner: PDFAnnotation) -> PDFAnnotation? {
@@ -401,13 +423,11 @@ final class PDFAnnotationPersistenceSession {
             for (annotation, inventory) in zip(page.annotations, pageInventory.annotations) {
                 if let popupReference = inventory.popup,
                    let popup = annotationByReference[popupReference] {
-                    annotation.popup = popup
-                    _ = popup.setValue(annotation, forAnnotationKey: .parent)
+                    PDFAnnotationInteroperability.attach(popup, to: annotation)
                 } else if inventory.subtype.caseInsensitiveCompare("Popup") == .orderedSame,
                           let parentReference = inventory.parent,
                           let owner = annotationByReference[parentReference] {
-                    owner.popup = annotation
-                    _ = annotation.setValue(owner, forAnnotationKey: .parent)
+                    PDFAnnotationInteroperability.attach(annotation, to: owner)
                 }
             }
         }
