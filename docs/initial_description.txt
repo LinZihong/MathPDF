@@ -10,9 +10,10 @@ Highlights and Notes (all highlights and annotation notes across the document)
 Annotation behavior:
 Works with highlights that have attached notes.
 Works with box-style note annotations.
-Clicking a note icon/box opens a popover for that note.
+Highlights with attached notes display a small runtime comment badge beside the marked passage, so note discovery does not depend on the sidebar.
+Clicking a comment badge, highlight, or note icon opens one page-attached note surface inside the document pane.
 Notes selected from the sidebar also open in context.
-When a PDF carries Preview-style popup companions for highlight notes, MathPDF treats the owning annotation's plain-text contents as authoritative and avoids duplicate in-app note UI. In memory it suppresses PDFKit's popup presentation and renders its own affordance. On disk it preserves or creates a standards-valid reciprocal `/Popup` and `/Parent` relationship. Saving reparses and rejects output whose page, annotation, relationship, or metadata semantics changed unexpectedly.
+When a PDF carries Preview-style popup companions for highlight notes, MathPDF treats the owning annotation's plain-text contents as authoritative and avoids duplicate in-app note UI. In memory it retains the companion and reciprocal edge in a separate persistence graph, while PDFKit's live page graph contains no Popup and the visible owner has no live `popup` pointer; MathPDF then renders its own affordance. On disk it preserves or creates a standards-valid reciprocal `/Popup` and `/Parent` relationship. Saving reparses and rejects output whose page, annotation, relationship, or metadata semantics changed unexpectedly.
 Math behavior:
 Supports common MathJax-style delimiters and broadly compatible math syntax.
 Rendering should be forgiving and user-friendly.
@@ -30,8 +31,10 @@ Compatibility intent:
 Keep annotation content and note storage interoperable with normal PDF tools.
 The app adds better rendering and UX, not a proprietary note format.
 MathPDF does not create a duplicate `/Text` annotation for a highlight note.
-PDFKit's standard page annotation remains visible, while MathPDF owns the one
-transient reading surface used inside the app.
+PDFKit's standard owning Highlight or Text annotation remains visible, while
+its Popup companion is kept out of PDFKit's live page graph. MathPDF owns the
+single transient reading surface used inside the app. The runtime badge is not
+stored as a second PDF annotation.
 Design intent:
 A minimal, tasteful, “just works” reader that feels native and uncluttered, while giving technical users first-class math note readability.
 
@@ -39,9 +42,13 @@ Product contract:
 - The target is the user's research-PDF workflow: multiple document windows, outlines, search, stable page and zoom navigation, highlighting, box notes, rendered math notes, printing, and trustworthy saving.
 - Signature authoring, image editing, cropping, OCR, and comprehensive PDF-form authoring are outside this replacement target.
 - Clicking an annotation already visible in the PDF must never change the document's viewport. Sidebar navigation preserves scale and scrolls only as much as needed.
-- Note edits are undoable document mutations and use native atomic autosave, with Save As and Revert available. A note popover does not own a separate disk-save workflow.
+- Note edits are undoable document mutations and use native atomic autosave, with Save As and Revert available. The note surface does not own a separate disk-save workflow.
 - The sidebar uses a native list and a title dropdown rather than persistent tabs. Its modes are Table of Contents and Highlights and Notes; bare highlights remain discoverable through extracted source text. The PDF remains the dominant visual surface; preamble editing lives in an optional trailing inspector.
-- Existing notes open for reading; only New Note or explicit Edit focuses the plain-text editor. Sidebar rows remain concise and spatially stable while the popover or inspector owns full note content.
+- Notes use true native source-list selection, including keyboard selection behavior. A user selection navigates and opens the note; clicking the selected row can reopen a closed note surface. Selection synchronized from an on-page annotation click must not itself trigger a second navigation or alter the viewport.
+- Existing notes open for reading; only New Note or explicit Edit focuses the plain-text editor. Read and edit use the same page-attached surface, which stays inside the PDF pane, avoids the source highlight when space permits, and never opens the macros inspector. Sidebar rows remain concise and spatially stable.
+- An existing empty annotation still opens read-first with an explicit Add Note action. Deleting during an edit ends that edit transaction, so undoing deletion cannot leak an older text baseline into the next edit.
+- Highlight may mark a selection spanning pages. Highlight with Note requires a single-page selection and rejects a multi-page selection before creating anything, because one PDF note belongs to one owning highlight annotation.
 - The unified toolbar uses a document title/page subtitle, direct page entry, one grouped zoom control, and an always-visible native search field with contextual result navigation.
+- Replacing a document clears any asynchronous search and selections owned by the previous document before the new reader state becomes active.
 - Per-document preambles intentionally support a small annotation-oriented subset: zero-argument aliases, simple parameterized commands, and math operators. Unsupported full-document TeX is ignored gracefully.
 - The preamble is stored as a versioned MathPDF marker inside standard PDF Keywords so unrelated metadata survives and non-MathPDF viewers still see ordinary PDF annotations.

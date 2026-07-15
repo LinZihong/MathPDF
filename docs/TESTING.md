@@ -53,13 +53,23 @@ a required build, test, renderer, entitlement, or release gate.
 - Every launched `XCUIApplication` must be terminated explicitly. Every manual
   validation run must quit MathPDF, and the final check must verify no process
   named `MathPDF` remains.
+- Do not use AppleScript or `System Events` for window discovery, bounds,
+  screenshots, or interaction. That route prompts for ChatGPT Automation access
+  and can silently obstruct later UI tests. Use app-scoped XCUITest evidence or
+  CoreGraphics window enumeration and window-ID capture instead; neither route
+  may broaden the capture to unrelated screen content.
 - Launch validation builds with `-ApplePersistenceIgnoreState YES`,
   `-NSDocumentReopenSavedDocuments NO`, and `-NSQuitAlwaysKeepsWindows NO`.
   State restoration must never reopen an older document or a build from another
   DerivedData directory.
 - Build and execute every test product from `/private/tmp/MathPDF-DerivedData`,
   never a DerivedData folder beneath Documents. The DEBUG UI fixture is in
-  memory and bypasses `NSOpenPanel`; it must not request broad folder access.
+  memory, loads through the real `DocumentGroup` scene, and bypasses
+  `NSOpenPanel`; it must not request broad folder access or create a parallel
+  replacement window.
+  Seed its annotations through MathPDF's production persistence writer rather
+  than `PDFDocument.dataRepresentation()`, so UI tests do not normalize or
+  validate a malformed PDFKit-authored Popup graph by accident.
 - A locked macOS session cannot provide valid UI evidence. If XCTest reports an
   app as `Running Background`, confirm the session is unlocked before changing
   product activation behavior or repeating the run.
@@ -79,8 +89,9 @@ a required build, test, renderer, entitlement, or release gate.
   unit tests where page content is irrelevant.
 - Resolve symlinks and confirm the document URL begins with
   `/private/tmp/MathPDF-Fixtures/` before any GUI launch, edit, or save.
-- `scripts/build-and-launch.sh` enforces that resolved boundary when given a PDF
-  path. Do not bypass the guard with direct `open`, Preview, or another launcher.
+- `scripts/build-and-launch.sh` enforces that resolved boundary for MathPDF, and
+  `scripts/open-preview-fixture.sh` enforces it for Preview interoperability
+  checks. Do not bypass those guards with direct `open` or another launcher.
 
 ## Permission-Stall Escape Protocol
 
@@ -93,8 +104,9 @@ ordinary builds have their own progress and timeout expectations.
    the debug-only in-memory fixture.
 2. If the expected state does not appear within 30 seconds, or a permission
    sheet, `Running Background`, TCC denial, sandbox denial, or Open panel
-   appears, terminate the app/test immediately. A pending prompt counts as a
-   failure, not progress.
+   appears at any point, terminate the app/test immediately. A pending prompt
+   counts as a failure, not progress. This includes prompts caused by QA tooling
+   itself, such as ChatGPT requesting Automation access to `System Events`.
 3. Inspect the path, process state, visible UI, and relevant log output once.
    Do not enter an unbounded wait/poll loop.
 4. If a path escaped the fixture boundary, recreate the fixture under `/tmp`
@@ -104,6 +116,14 @@ ordinary builds have their own progress and timeout expectations.
    unverified gate, and continue with non-GUI evidence where useful. Never wait
    for an absent user, alter TCC settings, request broad Documents access, or
    repeatedly relaunch the same blocked command.
+
+The 30-second signal applies only to reaching the declared first observable
+state. A later interaction hang, assertion failure, or Computer Use timeout is
+not retroactively a startup failure; classify it from the state actually
+observed. A permission sheet is different: it is an immediate route failure
+whenever it appears. Delegated interactive reviews also need a separate total-
+session bound so an idle app or automation call cannot own indefinite waiting
+after startup has succeeded.
 
 The primary agent remains responsible for elapsed time and cleanup even when a
 subagent or automation owns the immediate check. Delegated prompts must include
@@ -116,13 +136,35 @@ return-on-blocker instruction.
   clip-view origin. Sidebar navigation preserves scale and moves only enough to
   reveal an offscreen target.
 - One PDF annotation produces one visible reading affordance. A test must fail
-  if PDFKit's popup and MathPDF's popover appear together.
+  if PDFKit's popup and MathPDF's page-attached surface appear together.
+- MathPDF's live PDFKit graph contains no `/Popup` companions, and every visible
+  runtime owner's `popup` pointer is nil. Its separate persistence graph must
+  still serialize exactly one reciprocal `/Popup` and `/Parent` pair for each
+  applicable owner. Assert all three conditions; checking only `page.annotations`,
+  `isOpen == false`, a NoView flag, `app.popovers.count`, or custom-surface count
+  cannot detect a PDFKit-drawn closed-Popup marker.
+- The save model must reconcile current visible `/Annots` order with hidden
+  Popup slots. A tracked visible annotation removed, duplicated, or moved to a
+  different page outside MathPDF's mutation API must make saving fail closed;
+  it must never be silently resurrected or emitted on multiple pages.
 - Standalone `/Text` notes remain distinct from nearby highlights. Highlight
   notes store text on the owning annotation and round-trip a reciprocal
   `/Popup` and `/Parent` graph. Popup companions do not become sidebar notes,
   and no orphan popup or duplicate in-app surface may survive.
 - Editing remains plain text, is undoable, does not invent companion `/Text`
   annotations, and survives PDF reserialization.
+- Exercise `type -> delete -> undo delete -> edit -> undo edit`; the final undo
+  must restore the text present when deletion occurred, never a stale baseline
+  from before the deleted editing session.
+- `Highlight with Note` must reject a selection spanning multiple pages before
+  it mutates any page. Plain `Highlight` may continue to create one highlight
+  per selected page.
+- Activating an existing empty annotation opens a read-first surface with an
+  explicit Add Note action. Only explicit creation or explicit Edit/Add Note
+  starts editing.
+- Replacing the PDF document cancels the old document's asynchronous search and
+  resets query, result, selection, and searching state before accepting results
+  for the new document.
 - The versioned MathPDF preamble marker in standard PDF Keywords imports from
   externally authored PDFs and round-trips without removing unrelated keywords.
 - Valid macros render; malformed or unsupported TeX remains readable raw text;
@@ -178,7 +220,8 @@ GUI/manual release gates and must never be reported as unit-tested:
 - real multi-window focus, window restoration, per-window undo routing, and
   security-scoped file access;
 - event routing between text selection, annotation activation, and scrolling;
-- anchored popover geometry at every window/page edge and dismissal on scroll;
+- page-attached note-surface geometry at every window/page edge, source-passage
+  avoidance, containment inside the PDF pane, and dismissal on scroll;
 - keyboard focus order, menu commands, VoiceOver, larger text, dark appearance,
   increased contrast, Reduced Motion, and Reduced Transparency; and
 - responsiveness on the largest supplied research PDF.
