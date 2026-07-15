@@ -32,18 +32,19 @@ preamble format.
 - Commit `388970b` prevents parallel test hosts and document restoration from
   triggering Documents permission prompts. A signed ten-test document suite
   completed permission-clean afterward.
-- The working tree implements reciprocal popup persistence, guarded incremental
-  saves, semantic postvalidation, byte-identical no-op snapshots, per-revision
-  caching, and fail-closed editing for unsupported PDFs.
-- The permission-clean document suite initially passed 6/10 because the
-  validator compared fractional in-memory timestamps with whole-second PDF
-  `/M` values. After correct whole-second normalization, it passed 7/10 and
-  exposed deeper writer corruption across sequential documents: a new
-  `/Text` note vanished, edited highlight contents became nil, and an
-  unrelated bleed box drifted.
-- Independent review blocks the undocumented PDFKit append writer and confirms
-  additional graph-validation, undo, edit-gating, read-only creation, and
-  orphan-inference defects.
+- The normal test route again uses the production `MathPDF.app` host with
+  Automatic Apple Development signing. Focused tests passed before and after a
+  rebuild whose CDHash changed but certificate-based designated requirement
+  remained stable; no Documents prompt appeared. `MathPDFTestHost` is retained
+  only as a fallback diagnostic host.
+- The working tree implements reciprocal popup persistence through an embedded
+  qpdf-backed writer, semantic postvalidation, byte-identical no-op snapshots,
+  per-revision caching, and fail-closed editing for unsupported PDFs. PDFKit
+  remains the viewer and in-memory annotation API.
+- The production-host document suite passed 8/10 without a permission prompt.
+  The two remaining failures report an orphan `/Popup` in the standalone text-
+  note/preamble round trip and the unrelated-metadata preservation round trip.
+  They remain release blockers.
 - The detached note inspector/popover and toolbar remain the old interaction and
   must be replaced. The design direction is one context-preserving annotation
   surface with restrained color continuity and a quieter native hierarchy.
@@ -68,6 +69,9 @@ rules.
 - Test hosts run serially with document/window restoration disabled. A
   permission sheet is a failed validation route, never an approval request to
   work around.
+- Production `MathPDF.app` hosting with default Automatic Apple Development
+  signing is the normal unit-test route. The isolated host is fallback evidence
+  only and cannot by itself satisfy a production-host release gate.
 - No-op snapshots remain byte-identical. PDFs without a proven safe edit path
   remain read-only rather than silently losing semantics.
 - Required build and test evidence is signed and normally runs outside the agent
@@ -75,8 +79,10 @@ rules.
 
 ## Next Steps
 
-- [ ] Introduce the persistence backend boundary and replace PDFKit append
-      serialization with an embeddable standards-aware writer.
+- [x] Introduce the persistence backend boundary and replace PDFKit append
+      serialization with an embedded qpdf writer.
+- [ ] Correct the two orphan-popup failures exposed by the qpdf-backed round-
+      trip validator.
 - [ ] Correct exact popup-edge validation, popup-preserving undo, locked graph
       editing, read-only creation, and conflicting orphan handling.
 - [ ] Expand popup graph, repeated-save, color, flags, undo, and read-only
@@ -109,10 +115,18 @@ Passed:
 - 2026-07-14: after timestamp normalization, the same nonparallel signed suite
   passed 7/10 and exposed actual sequential-write data loss; result bundle
   `.build/SignedDerivedData/Logs/Test/Test-MathPDF-2026.07.14_20-04-15--0700.xcresult`.
+- 2026-07-14: a temporary production-host probe using default Xcode signing
+  passed all three `MathPreambleCompilerTests` before and after a rebuild. The
+  CDHash changed while the Apple Development designated requirement remained
+  stable, and neither run requested Documents access.
+- 2026-07-14: the normal production-host `MathPDFDocumentTests` run completed
+  without a permission prompt and passed 8/10; both failures were orphan-popup
+  semantic assertions in the active qpdf path.
 
 Not yet validated:
 
-- The active reciprocal-popup persistence implementation.
+- The active reciprocal-popup persistence implementation; 2/10 focused
+  document tests remain failing.
 - The integrated annotation interaction and toolbar redesign.
 - Idle autosave, Save As, Revert, close review, failure UI, external-file
   conflicts, real multi-window routing, accessibility configurations, and large-
@@ -124,8 +138,9 @@ Not yet validated:
 ## Compatibility Impact
 
 The active slice replaces deliberate popup removal with reciprocal relationship
-preservation. The attempted PDFKit append backend is rejected. Before commit, a
-replacement writer plus independent semantic reparsing must prove owner text,
+preservation. The attempted PDFKit append backend is rejected, and qpdf is the
+current embedded writer. Before commit, qpdf output plus independent semantic
+reparsing must prove owner text,
 exact popup edges, standalone notes, page geometry/content, unrelated
 annotations, forms, outlines, metadata, unknown annotation keys, and no-op
 bytes remain correct across repeated and multi-document saves. Any regression

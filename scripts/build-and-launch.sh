@@ -19,8 +19,8 @@ Usage: $SCRIPT_NAME [--signed|--developer-signed|--unsigned] [--build-only] [--r
 Any PDF passed for GUI validation must resolve under /private/tmp/MathPDF-Fixtures/.
 
 Defaults:
-  --signed     Sign to run locally without requiring an Apple Development certificate
-  --developer-signed  Use the project's Apple Development signing settings
+  --signed     Use the project's stable Apple Development signing settings
+  --developer-signed  Alias for --signed
   --unsigned   Build with CODE_SIGNING_ALLOWED=NO for narrow comparisons only
   --build-only Build but do not launch the app
   --renderer-experiment name  Pass a renderer experiment to the app
@@ -109,21 +109,12 @@ if [[ -n "$DOCUMENT_PATH" ]]; then
 fi
 
 case "$SIGNING_MODE" in
-  signed)
-    DERIVED_DATA_PATH="${DERIVED_DATA_PATH:-$ROOT_DIR/.build/SignedDerivedData}"
-    XCODEBUILD_SIGNING_ARGS=(
-      CODE_SIGN_IDENTITY=-
-      CODE_SIGN_STYLE=Manual
-      DEVELOPMENT_TEAM=
-      PROVISIONING_PROFILE_SPECIFIER=
-    )
-    ;;
-  developer-signed)
-    DERIVED_DATA_PATH="${DERIVED_DATA_PATH:-$ROOT_DIR/.build/DeveloperSignedDerivedData}"
+  signed|developer-signed)
+    DERIVED_DATA_PATH="${DERIVED_DATA_PATH:-/private/tmp/MathPDF-DerivedData}"
     XCODEBUILD_SIGNING_ARGS=()
     ;;
   unsigned)
-    DERIVED_DATA_PATH="${DERIVED_DATA_PATH:-$ROOT_DIR/.build/DerivedData}"
+    DERIVED_DATA_PATH="${DERIVED_DATA_PATH:-/private/tmp/MathPDF-UnsignedDerivedData}"
     XCODEBUILD_SIGNING_ARGS=(CODE_SIGNING_ALLOWED=NO)
     ;;
   *)

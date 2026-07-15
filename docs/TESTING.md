@@ -12,14 +12,16 @@ existing project entrypoint.
 
 ## Signed Execution
 
-Required build and test evidence uses locally signed products with the app's
-real sandbox entitlements. The standard ad-hoc signed test shape is:
+Required build and test evidence uses the project's default Automatic signing,
+Apple Development identity, development team, and real sandbox entitlements.
+Do not override these with `CODE_SIGN_IDENTITY=-`, `CODE_SIGN_STYLE=Manual`, or
+an empty team: an ad-hoc build has an unstable TCC identity across rebuilds.
+The standard test shape is:
 
 ```sh
 xcodebuild -project MathPDF.xcodeproj -scheme MathPDF \
-  -derivedDataPath .build/SignedDerivedData \
-  CODE_SIGN_IDENTITY=- CODE_SIGN_STYLE=Manual DEVELOPMENT_TEAM= \
-  PROVISIONING_PROFILE_SPECIFIER= -only-testing:MathPDFTests test
+  -derivedDataPath /private/tmp/MathPDF-DerivedData \
+  -only-testing:MathPDFTests test
 ```
 
 Signed `xcodebuild` usually needs out-of-sandbox permission on this machine to
@@ -31,11 +33,19 @@ a required build, test, renderer, entitlement, or release gate.
 ## Local Interaction Policy
 
 - Unit tests and build-for-testing are the default automated checks.
-- The shared `MathPDF` scheme keeps app-hosted unit and UI test targets
-  nonparallel and supplies `-NSDocumentReopenSavedDocuments NO` plus
-  `-ApplePersistenceIgnoreState YES` to test actions. Do not remove those
-  guards: parallel test hosts previously triggered an unexpected Documents
-  permission sheet.
+- The normal unit-test route is hosted by the production `MathPDF.app`. This
+  keeps integration tests representative of the shipping document runtime and
+  is safe only with the project's stable Apple Development signature and the
+  restoration guards below.
+- `MathPDFTestHost.app` remains available as a fallback diagnostic host. Use it
+  only if the normal production host repeatedly prompts, hangs, or reopens a
+  document after the permission-stall protocol has ruled out an unsafe fixture,
+  stale process, or signing regression. Any fallback run must be labeled as
+  test-host evidence and followed by a production-host run before satisfying a
+  release gate.
+- The shared `MathPDF` scheme keeps unit and UI test targets nonparallel and
+  supplies `-NSDocumentReopenSavedDocuments NO` plus
+  `-ApplePersistenceIgnoreState YES` as defense in depth. Do not remove them.
 - Do not run UI-test automation on the user's active desktop unless the user
   explicitly approves it for that session. Compile the UI-test target with
   `build-for-testing`, then prefer a focused Computer Use pass for local visual
@@ -47,9 +57,9 @@ a required build, test, renderer, entitlement, or release gate.
   `-NSDocumentReopenSavedDocuments NO`, and `-NSQuitAlwaysKeepsWindows NO`.
   State restoration must never reopen an older document or a build from another
   DerivedData directory.
-- Build and execute UI-test products from `/tmp/MathPDF-DerivedData`, never a
-  DerivedData folder beneath Documents. The DEBUG UI fixture is in memory and
-  bypasses `NSOpenPanel`; it must not request broad folder access.
+- Build and execute every test product from `/private/tmp/MathPDF-DerivedData`,
+  never a DerivedData folder beneath Documents. The DEBUG UI fixture is in
+  memory and bypasses `NSOpenPanel`; it must not request broad folder access.
 - A locked macOS session cannot provide valid UI evidence. If XCTest reports an
   app as `Running Background`, confirm the session is unlocked before changing
   product activation behavior or repeating the run.

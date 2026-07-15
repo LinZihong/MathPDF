@@ -18,6 +18,11 @@ used.
   document/window restoration for test actions. A signed ten-test
   `MathPDFDocumentTests` run completed without a Documents permission prompt,
   proving the permission-stall fix.
+- Unit tests normally use the production `MathPDF.app` host with Xcode's
+  Automatic Apple Development signing. A rebuild probe changed the app's CDHash
+  while preserving its certificate-based designated requirement; focused tests
+  passed before and after the rebuild without a Documents prompt. The isolated
+  `MathPDFTestHost` remains a fallback only.
 - Native per-document windows provide outlines, Highlights and Notes, search,
   page entry, grouped zoom controls, printing, Save As, Revert, annotation
   authoring, undo, and document autosave.
@@ -40,30 +45,28 @@ used.
   Back, and the native Print menu. All launched MathPDF/test processes were
   terminated afterward.
 
-## Working-tree changes, not yet validated
+## Working-tree changes, partially validated
 
 - The working tree adds reciprocal `/Popup` and `/Parent` persistence through
-  PDFKit's incremental append path, post-save semantic validation, byte-identical
+  an embedded qpdf-backed writer, post-save semantic validation, byte-identical
   no-op snapshots, per-revision snapshot caching, and read-only handling for
-  encrypted, signed, non-commentable, or otherwise unsupported edits.
-- After whole-second `/M` normalization, the permission-clean signed document
-  suite passed 7/10 and exposed real PDFKit append corruption across sequential
-  writes in one process: a created `/Text` note disappeared, edited highlight
-  `/Contents` became nil, and an unrelated page bleed box drifted. The result
-  bundle is
-  `.build/SignedDerivedData/Logs/Test/Test-MathPDF-2026.07.14_20-04-15--0700.xcresult`.
-- Independent review therefore blocks the undocumented PDFKit append writer.
-  Isolated green tests are not acceptance evidence for this backend.
-- The audit also confirmed incomplete owner-to-popup edge validation,
-  delete/undo popup metadata loss, locked-popup mutation, read-only creation
-  crashes, and unsafe orphan inference.
+  encrypted, signed, non-commentable, or otherwise unsupported edits. PDFKit
+  remains the viewer and in-memory annotation surface.
+- The normal production-host `MathPDFDocumentTests` run reached all ten tests
+  without a Documents prompt and passed 8/10. The two remaining failures are
+  semantic release blockers: the output validator reports an orphan `/Popup`
+  in `textNotePlacementAndPreambleRoundTripSemantically` and
+  `editingPreservesUnrelatedMetadataPagesAndAnnotations`.
+- The earlier undocumented PDFKit append backend remains rejected. The qpdf
+  boundary is the active direction, but it is not accepted until those popup
+  graph failures and the broader repeated-save corpus pass.
 - The requested interaction redesign remains unimplemented: the detached note
   inspector/popover and current toolbar are not acceptance-ready.
 
 ## Open validation gates
 
-- Rerun the signed document suite after every serializer correction, then the
-  full signed unit suite.
+- Correct the qpdf popup-graph output/validation mismatch, rerun the signed
+  document suite, then the full signed unit suite.
 - Build and run the three UI tests serially from
   `/tmp/MathPDF-DerivedData`; their shared scheme now suppresses document
   restoration, but the fixture and explicit-termination rules still apply.
@@ -75,7 +78,7 @@ used.
 
 ## Next safe action
 
-Replace PDFKit serialization behind an `AnnotationPersistenceBackend` boundary
-with a standards-aware low-level writer, retain PDFKit for viewing, and rerun
-the signed multi-document/repeated-save semantic corpus before committing the
-compatibility slice.
+Repair the two orphan-popup failures in the qpdf-backed persistence path, then
+rerun the signed multi-document/repeated-save semantic corpus before committing
+the compatibility slice. Use the production app host and default Xcode signing;
+use `MathPDFTestHost` only if that normal route becomes blocked again.

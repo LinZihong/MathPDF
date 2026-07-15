@@ -62,13 +62,10 @@ the changed contract, then expand in proportion to risk.
 
 ```sh
 xcodebuild -project MathPDF.xcodeproj -scheme MathPDF \
-  -derivedDataPath .build/SignedDerivedData \
-  CODE_SIGN_IDENTITY=- CODE_SIGN_STYLE=Manual DEVELOPMENT_TEAM= \
-  PROVISIONING_PROFILE_SPECIFIER= build
+  -derivedDataPath /private/tmp/MathPDF-DerivedData build
 xcodebuild -project MathPDF.xcodeproj -scheme MathPDF \
-  -derivedDataPath .build/SignedDerivedData \
-  CODE_SIGN_IDENTITY=- CODE_SIGN_STYLE=Manual DEVELOPMENT_TEAM= \
-  PROVISIONING_PROFILE_SPECIFIER= -only-testing:MathPDFTests test
+  -derivedDataPath /private/tmp/MathPDF-DerivedData \
+  -only-testing:MathPDFTests test
 scripts/build-and-launch.sh --signed --build-only
 ```
 
