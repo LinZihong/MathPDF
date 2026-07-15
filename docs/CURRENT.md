@@ -155,8 +155,9 @@ used.
   holistic review prompt. A fresh check-only gatekeeper accepted its first
   draft; the primary agent nevertheless found and corrected an imprecise
   fixture boundary and an ambiguous file-editing rule, and the gatekeeper
-  accepted the revised prompt. It remains intentionally unrun until the signed
-  post-correction candidate and disposable working fixture are ready.
+  accepted the revised prompt. It then governed the bounded independent
+  Computer Use attempts; those attempts returned no visible state and remain
+  honestly `UNVERIFIED` as recorded below.
 
 ## Open validation gates
 

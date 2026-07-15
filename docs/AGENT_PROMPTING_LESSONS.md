@@ -110,3 +110,72 @@ fixture” was not an exact path and “do not edit files” conflicted with tes
 PDF saves. The primary agent corrected those ambiguities itself and obtained a
 second ACCEPT. This is the desired relationship: the gatekeeper challenges the
 prompt, while the author remains accountable even when the check says yes.
+
+## Examples that worked in MathPDF
+
+### A holistic visual brief found defects that were never named
+
+The first independent visual reviewer was set up as a senior macOS product
+designer responsible for judging a daily-use mathematical PDF reader. The brief
+explained the desired product spirit—document dominance, native restraint,
+clear annotation discovery, and trustworthy interaction—but did not point to a
+particular toolbar control, badge, card, or sidebar row.
+
+That reviewer returned `VISUAL NO-PASS` and independently identified the custom-
+capsule feel of the toolbar, an ambiguous on-page marker, an overly heavy note
+surface, weak read/edit continuity, cramped sidebar rows, and stale color
+identity after recoloring. Those observations were valuable precisely because
+they were not restatements of defects supplied in the prompt.
+
+After the redesign, the follow-up prompt told the same reviewer to act as the
+final macOS design authority, inspect two exact current screenshots at original
+detail, judge only the new evidence, and neither inherit the old verdict nor
+reduce the task to Preview pixel matching. The fresh result was `VISUAL PASS`.
+This was a productive no-pass/pass loop: the standard stayed stable while the
+evidence changed.
+
+### A semantic ownership brief exposed a hidden PDFKit presentation path
+
+The annotation auditor received the user-level invariant rather than a proposed
+patch: one annotation should produce one MathPDF affordance at runtime, while
+the saved PDF should preserve a reciprocal Highlight–Popup relationship for
+Preview. The auditor was asked to challenge both implementation and proof.
+
+It found that removing Popup objects from `page.annotations` was insufficient:
+PDFKit could still paint its closed-popup marker through the owning highlight's
+live `popup` pointer. It also found that color Undo could lose an imported
+Popup's independent color and appearance stream. The resulting fix established
+the stronger three-part invariant—no runtime Popup page member, no runtime owner
+pointer, reciprocal persistence graph—and added the missing imported-color/AP
+regression. A narrower prompt such as “check that Popups are removed from the
+page” would likely have confirmed the incomplete implementation.
+
+### The check-only gatekeeper improved safety without taking authorship
+
+The final interactive-review prompt was given to a gatekeeper with an explicit
+contract: return acceptance or concise defects, and never rewrite the prompt.
+The gatekeeper rejected a draft that omitted the one-clean-retry rule. The
+primary author then revised the prompt rather than adopting gatekeeper-written
+language.
+
+On another pass the gatekeeper accepted, but the primary author's own reread
+still found that “the requested fixture” did not name an exact safe path and
+that a blanket “do not edit files” instruction conflicted with exercising saves
+on a disposable PDF. Correcting those issues after an acceptance demonstrated
+the intended division of responsibility: the gatekeeper is an adversarial
+check, not a substitute author or a source of infallible approval.
+
+### `UNVERIFIED` was a successful review outcome
+
+The Computer Use reviewers received an exact signed-app state, the in-memory or
+`/private/tmp/MathPDF-Fixtures` boundary, a 30-second first-state limit, a one-
+retry maximum, permission-sheet stop conditions, and mandatory cleanup. They
+were also told not to infer a verdict from source code, build logs, or old
+screenshots if visible interaction evidence never arrived.
+
+When the Computer Use channel stalled, the reviewers returned `UNVERIFIED` or
+were interrupted at the bound, and MathPDF was closed. This did not satisfy the
+interactive acceptance gate, but it was still good reviewer behavior: it
+prevented a fabricated ship verdict, an unbounded wait, and pressure to grant
+broader permissions. Prompts should make epistemic refusal an explicit success
+condition when the required evidence is unavailable.
