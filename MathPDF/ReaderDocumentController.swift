@@ -106,7 +106,7 @@ final class ReaderDocumentController: ObservableObject {
         )
     }
 
-    func addTextNote(on page: PDFPage, at point: CGPoint, undoManager: UndoManager?) -> PDFAnnotation {
+    func addTextNote(on page: PDFPage, at point: CGPoint, undoManager: UndoManager?) -> PDFAnnotation? {
         let annotation = document.addTextNote(on: page, at: point, undoManager: undoManager)
         readerTool = .browse
         return annotation

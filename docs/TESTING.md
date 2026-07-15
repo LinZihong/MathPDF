@@ -136,6 +136,14 @@ return-on-blocker instruction.
 - PDF persistence tests reparse the output and compare semantic page,
   annotation, reciprocal relationship, content, and metadata state rather than
   requiring byte equality after an edit. A no-op snapshot remains byte-identical.
+- Popup tests compare exact durable annotation identities and reciprocal edges;
+  sorted content or geometry-only comparisons are insufficient when two notes
+  are otherwise identical. Repeated-save tests retain and reparse older
+  snapshots so an in-memory revision cannot retroactively change prior output.
+- A writer must validate its strict output graph, but qpdf validating qpdf is not
+  the complete compatibility gate. Preview handshakes and at least one
+  independent raw parser must confirm `/Popup`, `/Parent`, `/Contents`, `/NM`,
+  and annotation counts on realistic fixtures before release sign-off.
 - PDFKit, AppKit, and WebKit mutation tests run on the main actor. WebKit probes
   run serially and use signed hosts with the required sandbox entitlements.
 - Never use arbitrary sleeps when a notification, publisher, accessibility
@@ -148,6 +156,12 @@ generated PDFs and semantic reparsing:
 
 - note identity and indexing, including identical nearby note contents;
 - annotation creation, edge clamping, edit, delete, undo, and popup ownership;
+- exact identity across edit, save, delete, undo, redo, and interleaved document
+  sessions, including identical note geometry and contents;
+- owner contents surviving every popup detach/reattach operation and highlight
+  color change;
+- fail-closed behavior when code mutates PDFKit annotations without registering
+  the mutation with the persistence session;
 - atomic data writes that reopen with page count, crop boxes, rotation, outline,
   unrelated annotations, form widgets, metadata, and preamble intact;
 - exact no-op behavior when a reveal target is already comfortably visible,

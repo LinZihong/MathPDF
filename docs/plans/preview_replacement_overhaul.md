@@ -41,10 +41,13 @@ preamble format.
   qpdf-backed writer, semantic postvalidation, byte-identical no-op snapshots,
   per-revision caching, and fail-closed editing for unsupported PDFs. PDFKit
   remains the viewer and in-memory annotation API.
-- The production-host document suite passed 8/10 without a permission prompt.
-  The two remaining failures report an orphan `/Popup` in the standalone text-
-  note/preamble round trip and the unrelated-metadata preservation round trip.
-  They remain release blockers.
+- The writer now owns the authoritative identity/edge graph, rejects untracked
+  PDFKit mutations, and requires reciprocal output edges. The orphan-popup
+  failures were traced to one-pass discovery of PDFKit-created Text popups and
+  corrected with two-pass binding plus explicit edge registration.
+- The production-host document suite passes 14/14 and the full signed unit suite
+  passes 30/30 without a Documents prompt. The adversarial revision corpus also
+  found and locked down PDFKit clearing owner contents when `popup` is detached.
 - The detached note inspector/popover and toolbar remain the old interaction and
   must be replaced. The design direction is one context-preserving annotation
   surface with restrained color continuity and a quieter native hierarchy.
@@ -61,11 +64,13 @@ rules.
   `docs/decisions/annotation-popup-interoperability.md`.
 - Edited snapshots are reparsed before acceptance. Reject page, geometry,
   annotation, relationship, or metadata drift.
-- 2026-07-14: The undocumented PDFKit append option is rejected as the
-  persistence backend. PDFKit remains the runtime viewer; dirty saves move
-  behind an `AnnotationPersistenceBackend` backed by a mature low-level PDF
-  parser/writer. Do not replace it with a handwritten xref/object-stream parser
-  or an external executable.
+- 2026-07-14: A controlled PDFKit serialization/reload probe dropped reciprocal
+  popup topology, so the undocumented append option is not the active
+  persistence backend. This does not claim that every PDFKit-to-Preview path is
+  impossible; a bounded end-to-end experiment remains available only if qpdf
+  becomes materially blocked. PDFKit remains the runtime viewer; dirty saves
+  use the embedded qpdf parser/writer. Do not replace it with a handwritten
+  xref/object-stream parser or an external executable.
 - Test hosts run serially with document/window restoration disabled. A
   permission sheet is a failed validation route, never an approval request to
   work around.
@@ -81,12 +86,14 @@ rules.
 
 - [x] Introduce the persistence backend boundary and replace PDFKit append
       serialization with an embedded qpdf writer.
-- [ ] Correct the two orphan-popup failures exposed by the qpdf-backed round-
+- [x] Correct the two orphan-popup failures exposed by the qpdf-backed round-
       trip validator.
-- [ ] Correct exact popup-edge validation, popup-preserving undo, locked graph
-      editing, read-only creation, and conflicting orphan handling.
-- [ ] Expand popup graph, repeated-save, color, flags, undo, and read-only
+- [x] Correct exact popup-edge validation, popup-preserving undo, and fail-closed
+      untracked graph mutation.
+- [x] Expand popup graph, repeated-save, color, undo, and read-only
       regression coverage; run the full signed `MathPDFTests` suite.
+- [ ] Validate realistic Preview-authored input, one-sided/orphan conflict
+      handling, annotation flags, and an independent raw-parser matrix.
 - [ ] Review the compatibility impact and commit the reciprocal-popup slice if
       the semantic gates pass.
 - [ ] Replace the detached note surfaces and toolbar; add palette continuity and
@@ -122,11 +129,18 @@ Passed:
 - 2026-07-14: the normal production-host `MathPDFDocumentTests` run completed
   without a permission prompt and passed 8/10; both failures were orphan-popup
   semantic assertions in the active qpdf path.
+- 2026-07-14: after two-pass popup binding and persistence-owned exact edges,
+  the signed production-host `MathPDFDocumentTests` suite passed 14/14. The
+  expanded corpus covers repeated snapshots, delete/undo/redo, identical
+  annotations, color changes, interleaved documents, and fail-closed untracked
+  mutation.
+- 2026-07-14: the full signed production-host `MathPDFTests` suite passed 30/30
+  in seven suites without a Documents prompt.
 
 Not yet validated:
 
-- The active reciprocal-popup persistence implementation; 2/10 focused
-  document tests remain failing.
+- Preview-authored raw corpus comparison, independent-parser confirmation,
+  one-sided/orphan conflict cases, and annotation-flag preservation.
 - The integrated annotation interaction and toolbar redesign.
 - Idle autosave, Save As, Revert, close review, failure UI, external-file
   conflicts, real multi-window routing, accessibility configurations, and large-
@@ -138,10 +152,10 @@ Not yet validated:
 ## Compatibility Impact
 
 The active slice replaces deliberate popup removal with reciprocal relationship
-preservation. The attempted PDFKit append backend is rejected, and qpdf is the
-current embedded writer. Before commit, qpdf output plus independent semantic
-reparsing must prove owner text,
-exact popup edges, standalone notes, page geometry/content, unrelated
-annotations, forms, outlines, metadata, unknown annotation keys, and no-op
-bytes remain correct across repeated and multi-document saves. Any regression
-is a release blocker.
+preservation. The observed PDFKit append result was not reliable enough to be
+the active writer, and qpdf is the embedded writer. Headless semantic reparsing now proves owner text, exact popup
+edges, standalone notes, page geometry/content, unrelated annotations, forms,
+outlines, metadata, preamble state, and no-op bytes across repeated and
+multi-document saves. Preview-authored corpus and independent-parser evidence
+remain required before final compatibility sign-off. Any regression is a
+release blocker.

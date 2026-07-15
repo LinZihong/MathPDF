@@ -2,6 +2,7 @@
 .build/
 .swift-module-cache/
 pdfs for testing/
+TestPDFs/
 
 # Xcode user-local state
 xcuserdata/

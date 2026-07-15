@@ -18,6 +18,8 @@ used.
   document/window restoration for test actions. A signed ten-test
   `MathPDFDocumentTests` run completed without a Documents permission prompt,
   proving the permission-stall fix.
+- `0fb21e7` records the stable production-host signing route, fixture boundary,
+  permission escape protocol, and test-host fallback policy.
 - Unit tests normally use the production `MathPDF.app` host with Xcode's
   Automatic Apple Development signing. A rebuild probe changed the app's CDHash
   while preserving its certificate-based designated requirement; focused tests
@@ -38,35 +40,47 @@ used.
   preserving unrelated metadata.
 - The checkpoint passed 25 out-of-sandbox signed unit/integration tests. That
   evidence covers the checkpoint's then-current popup-normalization policy, not
-  the active reciprocal-popup delta.
+  the active reciprocal-popup delta below.
 - A signed manual pass on
   `/tmp/MathPDF-Fixtures/58x-annotations-short.pdf` verified one-popover
   ownership, direct-click viewport stability, sidebar page/zoom navigation,
   Back, and the native Print menu. All launched MathPDF/test processes were
   terminated afterward.
 
-## Working-tree changes, partially validated
+## Working-tree changes, headlessly validated
 
 - The working tree adds reciprocal `/Popup` and `/Parent` persistence through
   an embedded qpdf-backed writer, post-save semantic validation, byte-identical
   no-op snapshots, per-revision snapshot caching, and read-only handling for
   encrypted, signed, non-commentable, or otherwise unsupported edits. PDFKit
   remains the viewer and in-memory annotation surface.
-- The normal production-host `MathPDFDocumentTests` run reached all ten tests
-  without a Documents prompt and passed 8/10. The two remaining failures are
-  semantic release blockers: the output validator reports an orphan `/Popup`
-  in `textNotePlacementAndPreambleRoundTripSemantically` and
-  `editingPreservesUnrelatedMetadataPagesAndAnnotations`.
-- The earlier undocumented PDFKit append backend remains rejected. The qpdf
-  boundary is the active direction, but it is not accepted until those popup
-  graph failures and the broader repeated-save corpus pass.
+- The writer owns its annotation identity and reciprocal edge graph instead of
+  trusting PDFKit's transient popup topology. It rejects unregistered runtime
+  mutations and validates exact output edges before returning a snapshot.
+- The normal signed production-host document suite passes 14/14. It covers
+  standalone Text notes, highlight notes, unrelated metadata and annotations,
+  repeated revisions, delete/undo/redo, identical geometry and contents,
+  color changes, multi-document isolation, no-op bytes, and fail-closed
+  untracked mutation. The full signed production-host unit suite passes 30/30.
+  Neither run requested Documents access, and the host exited afterward.
+- The adversarial lifecycle corpus exposed a PDFKit behavior in which assigning
+  `annotation.popup = nil` clears the owner's `contents`. Detach, reattach, and
+  color-change paths now preserve owner text explicitly, with regressions.
+- The earlier PDFKit serializer probe dropped reciprocal popup topology, so the
+  undocumented append backend is not the active writer. That is not a proof
+  that every controlled PDFKit-to-Preview workflow must fail; a narrowly scoped
+  end-to-end experiment remains a fallback only if qpdf becomes blocked. The
+  embedded qpdf boundary is the accepted persistence direction pending real
+  Preview and independent-parser handshake evidence.
 - The requested interaction redesign remains unimplemented: the detached note
   inspector/popover and current toolbar are not acceptance-ready.
 
 ## Open validation gates
 
-- Correct the qpdf popup-graph output/validation mismatch, rerun the signed
-  document suite, then the full signed unit suite.
+- Commit the headlessly green reciprocal-popup slice without staging the
+  user-owned `TestPDFs/` source corpus.
+- Validate a realistic Preview-authored and MathPDF-authored annotation matrix
+  under `/tmp/MathPDF-Fixtures` with raw dictionaries and an independent parser.
 - Build and run the three UI tests serially from
   `/tmp/MathPDF-DerivedData`; their shared scheme now suppresses document
   restoration, but the fixture and explicit-termination rules still apply.
@@ -78,7 +92,6 @@ used.
 
 ## Next safe action
 
-Repair the two orphan-popup failures in the qpdf-backed persistence path, then
-rerun the signed multi-document/repeated-save semantic corpus before committing
-the compatibility slice. Use the production app host and default Xcode signing;
+Commit the reciprocal-popup slice, then replace the detached annotation surfaces
+and undersized toolbar. Use the production app host and default Xcode signing;
 use `MathPDFTestHost` only if that normal route becomes blocked again.

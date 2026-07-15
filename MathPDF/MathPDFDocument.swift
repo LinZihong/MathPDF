@@ -17,8 +17,16 @@ final class MathPDFDocument: ReferenceFileDocument, ObservableObject {
         didSet {
             guard preamble != oldValue else { return }
             applyPreambleMetadata()
+            markSerializationDirty()
         }
     }
+
+    private var originalData: Data
+    private var serializationRevision = 0
+    private var cachedSnapshotRevision: Int?
+    private var cachedSnapshotData: Data?
+    private var popupDiskStates: [ObjectIdentifier: PDFPopupDiskState] = [:]
+    private var persistenceSession: PDFAnnotationPersistenceSession
 
     // PDFKit exposes document-attribute keys from externally-authored PDFs as
     // String-backed AnyHashable values, even though it also defines the
@@ -30,8 +38,17 @@ final class MathPDFDocument: ReferenceFileDocument, ObservableObject {
 
     init() {
         let data = Self.blankPDFData()
-        pdfDocument = PDFDocument(data: data) ?? PDFDocument()
+        let document = PDFDocument(data: data) ?? PDFDocument()
+        pdfDocument = document
+        originalData = data
+        cachedSnapshotRevision = 0
+        cachedSnapshotData = data
         preamble = ""
+        persistenceSession = PDFAnnotationPersistenceSession(
+            sourceData: data,
+            document: document
+        )
+        captureAndSuppressPopupPresentation()
     }
 
     init(data: Data) throws {
@@ -39,7 +56,15 @@ final class MathPDFDocument: ReferenceFileDocument, ObservableObject {
             throw CocoaError(.fileReadCorruptFile)
         }
         pdfDocument = document
+        originalData = data
+        cachedSnapshotRevision = 0
+        cachedSnapshotData = data
         preamble = Self.readPreamble(from: document)
+        persistenceSession = PDFAnnotationPersistenceSession(
+            sourceData: data,
+            document: document
+        )
+        captureAndSuppressPopupPresentation()
     }
 
     required init(configuration: ReadConfiguration) throws {
@@ -51,30 +76,36 @@ final class MathPDFDocument: ReferenceFileDocument, ObservableObject {
         }
 
         pdfDocument = document
+        originalData = data
+        cachedSnapshotRevision = 0
+        cachedSnapshotData = data
         preamble = Self.readPreamble(from: document)
+        persistenceSession = PDFAnnotationPersistenceSession(
+            sourceData: data,
+            document: document
+        )
+        captureAndSuppressPopupPresentation()
     }
 
     func snapshot(contentType: UTType) throws -> Data {
-        applyPreambleMetadata()
-        synchronizePopupContentsBeforeSerialization()
-        guard
-            let sourceData = pdfDocument.dataRepresentation(),
-            let serializableCopy = PDFDocument(data: sourceData)
-        else {
-            throw CocoaError(.fileWriteUnknown)
+        if cachedSnapshotRevision == serializationRevision, let cachedSnapshotData {
+            return cachedSnapshotData
+        }
+        if let editingError = editingError {
+            throw editingError
         }
 
-        // PDFKit does not reliably preserve /Popup + /Parent relationships when
-        // writing an edited document. A dropped relationship leaves a visible,
-        // orphaned Popup annotation alongside MathPDF's owned note surface.
-        // Normalize only the serialized copy: the owning annotation keeps the
-        // interoperable plain-text Contents value, while companion Popup objects
-        // are omitted so Preview and other readers cannot present duplicates.
-        Self.removePopupCompanions(from: serializableCopy)
-        guard let normalizedData = serializableCopy.dataRepresentation() else {
-            throw CocoaError(.fileWriteUnknown)
-        }
-        return normalizedData
+        let data = try persistenceSession.serializedData(
+            document: pdfDocument,
+            preamble: preamble
+        )
+        try PDFAnnotationInteroperability.validate(
+            serializedData: data,
+            against: pdfDocument
+        )
+        cachedSnapshotRevision = serializationRevision
+        cachedSnapshotData = data
+        return data
     }
 
     func serializedData() throws -> Data {
@@ -92,8 +123,18 @@ final class MathPDFDocument: ReferenceFileDocument, ObservableObject {
         guard let fixture = PDFDocument(data: Self.uiTestFixtureData()) else { return }
         objectWillChange.send()
         pdfDocument = fixture
+        originalData = Self.uiTestFixtureData()
+        serializationRevision = 0
+        cachedSnapshotRevision = 0
+        cachedSnapshotData = originalData
+        popupDiskStates.removeAll()
         preamble = #"\newcommand{\Q}{\mathbb{Q}}"#
-        annotationRevision &+= 1
+        persistenceSession = PDFAnnotationPersistenceSession(
+            sourceData: originalData,
+            document: fixture
+        )
+        captureAndSuppressPopupPresentation()
+        recordAnnotationMutation()
     }
 #endif
 
@@ -101,11 +142,20 @@ final class MathPDFDocument: ReferenceFileDocument, ObservableObject {
         FileWrapper(regularFileWithContents: snapshot)
     }
 
+    var editingError: Error? {
+        persistenceSession.editingError
+    }
+
+    func canEdit(_ annotation: PDFAnnotation) -> Bool {
+        persistenceSession.canEdit(annotation)
+    }
+
     func updateContents(
         of annotation: PDFAnnotation,
         to contents: String,
         undoManager: UndoManager?
     ) {
+        guard canEdit(annotation) else { return }
         let previous = annotation.contents ?? ""
         guard previous != contents else { return }
 
@@ -117,15 +167,18 @@ final class MathPDFDocument: ReferenceFileDocument, ObservableObject {
         objectWillChange.send()
         annotation.contents = contents
         annotation.modificationDate = Date()
-        synchronizePopup(for: annotation)
-        annotationRevision &+= 1
+        annotation.removeValue(forAnnotationKey: PDFAnnotationKey(rawValue: "/RC"))
+        persistenceSession.markContentsChanged(on: annotation)
+        updatePopupCompanion(for: annotation)
+        recordAnnotationMutation()
     }
 
     func addTextNote(
         on page: PDFPage,
         at point: CGPoint,
         undoManager: UndoManager?
-    ) -> PDFAnnotation {
+    ) -> PDFAnnotation? {
+        guard editingError == nil else { return nil }
         let cropBox = page.bounds(for: .cropBox)
         let center = CGPoint(
             x: min(max(point.x, cropBox.minX + 12), cropBox.maxX - 12),
@@ -139,7 +192,20 @@ final class MathPDFDocument: ReferenceFileDocument, ObservableObject {
 
         objectWillChange.send()
         page.addAnnotation(annotation)
-        annotationRevision &+= 1
+        persistenceSession.registerCreated(annotation)
+        if let popup = annotation.popup, popup.page === page {
+            persistenceSession.registerCreated(popup)
+            persistenceSession.markPopupEdge(owner: annotation, popup: popup)
+            popupDiskStates[ObjectIdentifier(popup)] = PDFPopupDiskState(
+                flags: 0,
+                isOpen: false
+            )
+            PDFAnnotationInteroperability.suppressPopupPresentation(
+                in: pdfDocument,
+                states: &popupDiskStates
+            )
+        }
+        recordAnnotationMutation()
 
         undoManager?.registerUndo(withTarget: self) { document in
             document.removeAnnotation(annotation, undoManager: undoManager)
@@ -150,8 +216,15 @@ final class MathPDFDocument: ReferenceFileDocument, ObservableObject {
 
     func addHighlight(
         from selection: PDFSelection,
+        color: NSColor = NSColor(
+            calibratedRed: 0.980392,
+            green: 0.803922,
+            blue: 0.352941,
+            alpha: 1
+        ),
         undoManager: UndoManager?
     ) -> PDFAnnotation? {
+        guard editingError == nil else { return nil }
         var pageLines: [ObjectIdentifier: (page: PDFPage, bounds: [CGRect])] = [:]
         var pageOrder: [ObjectIdentifier] = []
 
@@ -178,7 +251,7 @@ final class MathPDFDocument: ReferenceFileDocument, ObservableObject {
             else { continue }
 
             let annotation = PDFAnnotation(bounds: annotationBounds, forType: .highlight, withProperties: nil)
-            annotation.color = .systemYellow.withAlphaComponent(0.45)
+            annotation.color = color
             annotation.modificationDate = Date()
             annotation.quadrilateralPoints = lineBounds.flatMap { bounds in
                 let left = bounds.minX - annotationBounds.minX
@@ -193,12 +266,13 @@ final class MathPDFDocument: ReferenceFileDocument, ObservableObject {
                 ]
             }
             page.addAnnotation(annotation)
+            persistenceSession.registerCreated(annotation)
             created.append(annotation)
         }
 
         guard let first = created.first else { return nil }
         objectWillChange.send()
-        annotationRevision &+= 1
+        recordAnnotationMutation()
 
         undoManager?.registerUndo(withTarget: self) { document in
             for annotation in created {
@@ -210,68 +284,143 @@ final class MathPDFDocument: ReferenceFileDocument, ObservableObject {
     }
 
     func removeAnnotation(_ annotation: PDFAnnotation, undoManager: UndoManager?) {
+        guard canEdit(annotation) else { return }
         guard let page = annotation.page else { return }
         objectWillChange.send()
+        let popup = PDFAnnotationInteroperability.detachPopup(from: annotation)
+        if let popup {
+            persistenceSession.detachPopup(popup, from: annotation)
+            popupDiskStates.removeValue(forKey: ObjectIdentifier(popup))
+        }
         page.removeAnnotation(annotation)
-        annotationRevision &+= 1
+        persistenceSession.markDeleted(annotation)
+        recordAnnotationMutation()
 
         undoManager?.registerUndo(withTarget: self) { document in
-            document.restoreAnnotation(annotation, to: page, undoManager: undoManager)
+            document.restoreAnnotation(
+                annotation,
+                popup: popup,
+                to: page,
+                undoManager: undoManager
+            )
         }
         undoManager?.setActionName("Delete Note")
     }
 
     private func restoreAnnotation(
         _ annotation: PDFAnnotation,
+        popup: PDFAnnotation?,
         to page: PDFPage,
         undoManager: UndoManager?
     ) {
         objectWillChange.send()
         page.addAnnotation(annotation)
-        annotationRevision &+= 1
+        persistenceSession.markRestored(annotation)
+        if let popup {
+            page.addAnnotation(popup)
+            persistenceSession.markRestored(popup)
+            PDFAnnotationInteroperability.attach(popup, to: annotation)
+            persistenceSession.markPopupEdge(owner: annotation, popup: popup)
+        } else {
+            updatePopupCompanion(for: annotation)
+        }
+        recordAnnotationMutation()
         undoManager?.registerUndo(withTarget: self) { document in
             document.removeAnnotation(annotation, undoManager: undoManager)
         }
     }
 
-    private func synchronizePopup(for annotation: PDFAnnotation) {
-        guard annotation.type?.caseInsensitiveCompare("Highlight") == .orderedSame else {
-            annotation.popup?.contents = annotation.contents
+    func updateHighlightColor(
+        of annotation: PDFAnnotation,
+        to color: NSColor,
+        undoManager: UndoManager?
+    ) {
+        guard persistenceSession.canChangeColor(of: annotation), annotation.color != color else {
+            return
+        }
+        let previous = annotation.color
+        undoManager?.registerUndo(withTarget: self) { document in
+            document.updateHighlightColor(of: annotation, to: previous, undoManager: undoManager)
+        }
+        undoManager?.setActionName("Change Highlight Color")
+
+        objectWillChange.send()
+        PDFAnnotationInteroperability.updateColor(
+            of: annotation,
+            to: color,
+            popupStates: &popupDiskStates
+        )
+        annotation.modificationDate = Date()
+        persistenceSession.markColorChanged(on: annotation)
+        if let popup = annotation.popup {
+            persistenceSession.markColorChanged(on: popup)
+        }
+        recordAnnotationMutation()
+        PDFAnnotationInteroperability.suppressPopupPresentation(
+            in: pdfDocument,
+            states: &popupDiskStates
+        )
+    }
+
+    private func updatePopupCompanion(for annotation: PDFAnnotation) {
+        guard
+            annotation.type?.caseInsensitiveCompare("Highlight") == .orderedSame,
+            let page = annotation.page
+        else { return }
+
+        if (annotation.contents ?? "").isEmpty {
+            if let popup = PDFAnnotationInteroperability.detachPopup(from: annotation) {
+                persistenceSession.detachPopup(popup, from: annotation)
+                popupDiskStates.removeValue(forKey: ObjectIdentifier(popup))
+            }
             return
         }
 
-        if let popup = annotation.popup {
-            popup.contents = annotation.contents
-            popup.modificationDate = annotation.modificationDate
+        let popup: PDFAnnotation
+        if let existing = annotation.popup {
+            popup = existing
+        } else if let detached = persistenceSession.takeDetachedPopup(for: annotation) {
+            popup = detached
+            page.addAnnotation(detached)
+            PDFAnnotationInteroperability.attach(detached, to: annotation)
+        } else {
+            popup = PDFAnnotationInteroperability.makePopupCompanion(for: annotation, on: page)
+            persistenceSession.registerCreated(popup)
         }
+        popup.contents = nil
+        popup.color = annotation.color
+        popup.modificationDate = annotation.modificationDate
+        if case nil = popupDiskStates[ObjectIdentifier(popup)] {
+            popupDiskStates[ObjectIdentifier(popup)] = PDFPopupDiskState(flags: 0, isOpen: false)
+        }
+        persistenceSession.markPopupEdge(owner: annotation, popup: popup)
+        PDFAnnotationInteroperability.suppressPopupPresentation(
+            in: pdfDocument,
+            states: &popupDiskStates
+        )
     }
 
-    private func synchronizePopupContentsBeforeSerialization() {
-        for pageIndex in 0..<pdfDocument.pageCount {
-            guard let page = pdfDocument.page(at: pageIndex) else { continue }
-            for annotation in page.annotations {
-                guard let popup = annotation.popup else { continue }
-                if (annotation.contents ?? "").isEmpty,
-                   let popupContents = popup.contents,
-                   !popupContents.isEmpty {
-                    annotation.contents = popupContents
-                }
-            }
-        }
+    private func captureAndSuppressPopupPresentation() {
+        popupDiskStates = PDFAnnotationInteroperability.capturePopupDiskStates(in: pdfDocument)
+        PDFAnnotationInteroperability.suppressPopupPresentation(
+            in: pdfDocument,
+            states: &popupDiskStates
+        )
     }
 
-    private static func removePopupCompanions(from document: PDFDocument) {
-        for pageIndex in 0..<document.pageCount {
-            guard let page = document.page(at: pageIndex) else { continue }
-            for annotation in page.annotations where
-                annotation.type?.caseInsensitiveCompare("Popup") == .orderedSame
-            {
-                page.removeAnnotation(annotation)
-            }
-        }
+    private func recordAnnotationMutation() {
+        annotationRevision &+= 1
+        markSerializationDirty()
+    }
+
+    private func markSerializationDirty() {
+        serializationRevision &+= 1
+        cachedSnapshotRevision = nil
+        cachedSnapshotData = nil
     }
 
     private func applyPreambleMetadata() {
+        persistenceSession.markMetadataChanged()
         var attributes = pdfDocument.documentAttributes ?? [:]
         attributes.removeValue(forKey: Self.legacyPreambleKey)
 

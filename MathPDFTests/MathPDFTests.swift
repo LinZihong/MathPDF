@@ -171,7 +171,7 @@ struct PDFNoteExtractorTests {
 @Suite("Document editing")
 struct MathPDFDocumentTests {
     @Test
-    func editingIsUndoableAndDoesNotInventCompanionAnnotations() throws {
+    func editingHighlightCreatesAStandardsPopupAndRemainsUndoable() throws {
         let document = MathPDFDocument()
         let page = try #require(document.pdfDocument.page(at: 0))
         let highlight = TestPDFFactory.annotation(.highlight, contents: "before", bounds: .init(x: 70, y: 600, width: 120, height: 18))
@@ -183,7 +183,11 @@ struct MathPDFDocumentTests {
         document.updateContents(of: highlight, to: "after", undoManager: undoManager)
         undoManager.endUndoGrouping()
         #expect(highlight.contents == "after")
-        #expect(page.annotations.filter { $0.type == "Text" || $0.type == "Popup" }.isEmpty)
+        let popup = try #require(highlight.popup)
+        #expect(page.annotations.contains { $0 === popup })
+        #expect(popup.contents == nil)
+        #expect((popup.value(forAnnotationKey: .parent) as? PDFAnnotation) === highlight)
+        #expect(page.annotations.filter { $0.type == "Text" }.isEmpty)
 
         undoManager.undo()
         #expect(highlight.contents == "before")
@@ -192,7 +196,7 @@ struct MathPDFDocumentTests {
     }
 
     @Test
-    func editingSynchronizesAnExistingPopupOnly() throws {
+    func editingKeepsContentsOnTheOwnerAndPreservesTheExistingPopup() throws {
         let document = MathPDFDocument()
         let page = try #require(document.pdfDocument.page(at: 0))
         let highlight = TestPDFFactory.annotation(.highlight, contents: "before", bounds: .init(x: 70, y: 600, width: 120, height: 18))
@@ -202,7 +206,10 @@ struct MathPDFDocumentTests {
         highlight.popup = popup
 
         document.updateContents(of: highlight, to: "after", undoManager: nil)
-        #expect(popup.contents == "after")
+        #expect(highlight.contents == "after")
+        #expect(popup.contents == nil)
+        #expect(highlight.popup === popup)
+        #expect((popup.value(forAnnotationKey: .parent) as? PDFAnnotation) === highlight)
         #expect(page.annotations.filter { $0.type == "Text" }.isEmpty)
     }
 
@@ -213,7 +220,11 @@ struct MathPDFDocumentTests {
         let undoManager = UndoManager()
         undoManager.groupsByEvent = false
         undoManager.beginUndoGrouping()
-        let note = document.addTextNote(on: page, at: CGPoint(x: 100, y: 140), undoManager: undoManager)
+        let note = try #require(document.addTextNote(
+            on: page,
+            at: CGPoint(x: 100, y: 140),
+            undoManager: undoManager
+        ))
         document.updateContents(of: note, to: #"Point in $\Q$"#, undoManager: undoManager)
         undoManager.endUndoGrouping()
         document.preamble = #"\newcommand{\Q}{\mathbb{Q}}"#
@@ -224,6 +235,11 @@ struct MathPDFDocumentTests {
         #expect(reloadedNotes.first?.contents == #"Point in $\Q$"#)
         #expect(abs((reloadedNotes.first?.bounds.midX ?? 0) - 100) < 1)
         #expect(reloaded.preamble == #"\newcommand{\Q}{\mathbb{Q}}"#)
+        let reloadedPage = try #require(reloaded.pdfDocument.page(at: 0))
+        let reloadedText = try #require(reloadedPage.annotations.first { $0.type == "Text" })
+        let reloadedPopup = try #require(reloadedText.popup)
+        #expect(reloadedPage.annotations.contains { $0 === reloadedPopup })
+        #expect((reloadedPopup.value(forAnnotationKey: .parent) as? PDFAnnotation) === reloadedText)
     }
 
     @Test
@@ -232,16 +248,16 @@ struct MathPDFDocumentTests {
         let page = try #require(document.pdfDocument.page(at: 0))
         let cropBox = page.bounds(for: .cropBox)
 
-        let below = document.addTextNote(
+        let below = try #require(document.addTextNote(
             on: page,
             at: CGPoint(x: cropBox.minX - 500, y: cropBox.minY - 500),
             undoManager: nil
-        )
-        let above = document.addTextNote(
+        ))
+        let above = try #require(document.addTextNote(
             on: page,
             at: CGPoint(x: cropBox.maxX + 500, y: cropBox.maxY + 500),
             undoManager: nil
-        )
+        ))
 
         #expect(cropBox.contains(below.bounds))
         #expect(cropBox.contains(above.bounds))
@@ -266,35 +282,49 @@ struct MathPDFDocumentTests {
     @Test
     func editingPreservesUnrelatedMetadataPagesAndAnnotations() throws {
         let source = TestPDFFactory.document(pageCount: 2)
-        let document = try MathPDFDocument(data: try #require(source.dataRepresentation()))
-        var attributes = document.pdfDocument.documentAttributes ?? [:]
+        var attributes = source.documentAttributes ?? [:]
         attributes[PDFDocumentAttribute.keywordsAttribute.rawValue] = ["research", "algebraic geometry"]
         attributes[PDFDocumentAttribute.titleAttribute.rawValue] = "A preserved research PDF"
-        document.pdfDocument.documentAttributes = attributes
+        source.documentAttributes = attributes
+        let sourceFirstPage = try #require(source.page(at: 0))
+        let sourceSecondPage = try #require(source.page(at: 1))
+        sourceFirstPage.rotation = 90
+        sourceSecondPage.setBounds(CGRect(x: 18, y: 24, width: 540, height: 720), for: .cropBox)
+
+        let widget = TestPDFFactory.annotation(.widget, contents: "", bounds: .init(x: 100, y: 180, width: 180, height: 28))
+        widget.widgetFieldType = .text
+        widget.fieldName = "researcher"
+        widget.widgetStringValue = "Sofia Kovalevskaya"
+        sourceSecondPage.addAnnotation(widget)
+
+        let outlineRoot = PDFOutline()
+        let section = PDFOutline()
+        section.label = "Preserved section"
+        section.destination = PDFDestination(page: sourceSecondPage, at: CGPoint(x: 18, y: 744))
+        outlineRoot.insertChild(section, at: 0)
+        source.outlineRoot = outlineRoot
+
+        // Seed the standalone Text note through MathPDF rather than PDFKit's
+        // serializer. PDFKit can emit a malformed Popup /Parent for a newly
+        // inserted Text annotation, which would make the fixture invalid before
+        // the preservation behavior under test begins.
+        let seededDocument = try MathPDFDocument(data: try #require(source.dataRepresentation()))
+        let seededSecondPage = try #require(seededDocument.pdfDocument.page(at: 1))
+        let seededNote = try #require(seededDocument.addTextNote(
+            on: seededSecondPage,
+            at: CGPoint(x: 72, y: 72),
+            undoManager: nil
+        ))
+        seededDocument.updateContents(of: seededNote, to: "keep me", undoManager: nil)
+
+        let document = try MathPDFDocument(data: seededDocument.serializedData())
         let firstPage = try #require(document.pdfDocument.page(at: 0))
-        let secondPage = try #require(document.pdfDocument.page(at: 1))
-        firstPage.rotation = 90
-        secondPage.setBounds(CGRect(x: 18, y: 24, width: 540, height: 720), for: .cropBox)
         let highlight = TestPDFFactory.annotation(.highlight, contents: "before", bounds: .init(x: 80, y: 600, width: 160, height: 18))
         let popup = TestPDFFactory.annotation(.popup, contents: "before", bounds: .init(x: 260, y: 500, width: 180, height: 120))
         firstPage.addAnnotation(highlight)
         firstPage.addAnnotation(popup)
         highlight.popup = popup
         highlight.userName = "Emmy Noether"
-        secondPage.addAnnotation(TestPDFFactory.annotation(.text, contents: "keep me", bounds: .init(x: 60, y: 60, width: 24, height: 24)))
-
-        let widget = TestPDFFactory.annotation(.widget, contents: "", bounds: .init(x: 100, y: 180, width: 180, height: 28))
-        widget.widgetFieldType = .text
-        widget.fieldName = "researcher"
-        widget.widgetStringValue = "Sofia Kovalevskaya"
-        secondPage.addAnnotation(widget)
-
-        let outlineRoot = PDFOutline()
-        let section = PDFOutline()
-        section.label = "Preserved section"
-        section.destination = PDFDestination(page: secondPage, at: CGPoint(x: 18, y: 744))
-        outlineRoot.insertChild(section, at: 0)
-        document.pdfDocument.outlineRoot = outlineRoot
 
         document.updateContents(of: highlight, to: "after", undoManager: nil)
         document.preamble = #"\newcommand{\Q}{\mathbb{Q}}"#
@@ -319,8 +349,9 @@ struct MathPDFDocumentTests {
         let savedHighlight = try #require(savedFirstPage.annotations.first { $0.type == "Highlight" })
         #expect(savedHighlight.contents == "after")
         #expect(savedHighlight.userName == "Emmy Noether")
-        #expect(savedHighlight.popup == nil)
-        #expect(savedFirstPage.annotations.allSatisfy { $0.type != "Popup" })
+        let savedPopup = try #require(savedHighlight.popup)
+        #expect(savedFirstPage.annotations.contains { $0 === savedPopup })
+        #expect((savedPopup.value(forAnnotationKey: .parent) as? PDFAnnotation) === savedHighlight)
         #expect(savedFirstPage.annotations.filter { $0.type == "Text" }.isEmpty)
         #expect(savedFirstPage.rotation == 90)
         #expect(savedSecondPage.bounds(for: .cropBox) == CGRect(x: 18, y: 24, width: 540, height: 720))
@@ -334,7 +365,7 @@ struct MathPDFDocumentTests {
     }
 
     @Test
-    func popupCompanionNormalizesToOwningAnnotationWithoutMutatingLiveDocument() throws {
+    func popupCompanionRoundTripsReciprocallyWithoutMutatingLiveTopology() throws {
         let document = MathPDFDocument()
         let page = try #require(document.pdfDocument.page(at: 0))
         let sourceHighlight = TestPDFFactory.annotation(.highlight, contents: "before", bounds: .init(x: 80, y: 600, width: 160, height: 18))
@@ -344,7 +375,7 @@ struct MathPDFDocumentTests {
         sourceHighlight.popup = sourcePopup
 
         document.updateContents(of: sourceHighlight, to: "after", undoManager: nil)
-        #expect(sourcePopup.contents == "after")
+        #expect(sourcePopup.contents == nil)
 
         let data = try document.serializedData()
         #expect(sourceHighlight.popup === sourcePopup)
@@ -354,8 +385,193 @@ struct MathPDFDocumentTests {
         let savedPage = try #require(reloaded.pdfDocument.page(at: 0))
         let savedHighlight = try #require(savedPage.annotations.first { $0.type == "Highlight" })
         #expect(savedHighlight.contents == "after")
-        #expect(savedHighlight.popup == nil)
-        #expect(savedPage.annotations.allSatisfy { $0.type != "Popup" })
+        let savedPopup = try #require(savedHighlight.popup)
+        #expect(savedPage.annotations.contains { $0 === savedPopup })
+        #expect((savedPopup.value(forAnnotationKey: .parent) as? PDFAnnotation) === savedHighlight)
+    }
+
+    @Test
+    func noOpSnapshotIsByteIdenticalAndDirtySnapshotIsCachedPerRevision() throws {
+        let sourceDocument = TestPDFFactory.document(pageCount: 2)
+        let sourceData = try #require(sourceDocument.dataRepresentation())
+        let document = try MathPDFDocument(data: sourceData)
+
+        #expect(try document.serializedData() == sourceData)
+        #expect(try document.serializedData() == sourceData)
+
+        let page = try #require(document.pdfDocument.page(at: 0))
+        let highlight = TestPDFFactory.annotation(
+            .highlight,
+            contents: "",
+            bounds: .init(x: 80, y: 600, width: 160, height: 18)
+        )
+        page.addAnnotation(highlight)
+        document.updateContents(of: highlight, to: "a new note", undoManager: nil)
+
+        let first = try document.serializedData()
+        let second = try document.serializedData()
+        #expect(first == second)
+        #expect(first != sourceData)
+
+        let reloaded = try MathPDFDocument(data: first)
+        let savedPage = try #require(reloaded.pdfDocument.page(at: 0))
+        let savedHighlight = try #require(savedPage.annotations.first { $0.type == "Highlight" })
+        let savedPopup = try #require(savedHighlight.popup)
+        #expect((savedPopup.value(forAnnotationKey: .parent) as? PDFAnnotation) === savedHighlight)
+    }
+
+    @Test
+    func repeatedSaveDeleteUndoRedoPreservesExactAnnotationIdentity() throws {
+        let source = TestPDFFactory.document(pageCount: 1)
+        let sourcePage = try #require(source.page(at: 0))
+        let sharedBounds = CGRect(x: 80, y: 600, width: 160, height: 18)
+        let first = TestPDFFactory.annotation(.highlight, contents: "", bounds: sharedBounds)
+        let second = TestPDFFactory.annotation(.highlight, contents: "", bounds: sharedBounds)
+        sourcePage.addAnnotation(first)
+        sourcePage.addAnnotation(second)
+
+        let document = try MathPDFDocument(data: try #require(source.dataRepresentation()))
+        let page = try #require(document.pdfDocument.page(at: 0))
+        let importedHighlights = page.annotations.filter { $0.type == "Highlight" }
+        #expect(importedHighlights.count == 2)
+        let importedFirst = try #require(importedHighlights.first)
+        let importedSecond = try #require(importedHighlights.last)
+        document.updateContents(of: importedFirst, to: "same", undoManager: nil)
+        document.updateContents(of: importedSecond, to: "same", undoManager: nil)
+
+        let nameKey = PDFAnnotationKey(rawValue: "/NM")
+        let firstName = try #require(importedFirst.value(forAnnotationKey: nameKey) as? String)
+        let secondName = try #require(importedSecond.value(forAnnotationKey: nameKey) as? String)
+        #expect(firstName != secondName)
+
+        document.updateContents(of: importedSecond, to: "second v1", undoManager: nil)
+        let firstRevision = try document.serializedData()
+        try assertHighlightGraph(
+            in: firstRevision,
+            expected: [firstName: "same", secondName: "second v1"]
+        )
+
+        document.updateContents(of: importedSecond, to: "second v2", undoManager: nil)
+        let secondRevision = try document.serializedData()
+        try assertHighlightGraph(
+            in: secondRevision,
+            expected: [firstName: "same", secondName: "second v2"]
+        )
+
+        let undoManager = UndoManager()
+        undoManager.groupsByEvent = false
+        undoManager.beginUndoGrouping()
+        document.removeAnnotation(importedSecond, undoManager: undoManager)
+        undoManager.endUndoGrouping()
+        let deletedRevision = try document.serializedData()
+        try assertHighlightGraph(in: deletedRevision, expected: [firstName: "same"])
+
+        undoManager.undo()
+        let restoredRevision = try document.serializedData()
+        try assertHighlightGraph(
+            in: restoredRevision,
+            expected: [firstName: "same", secondName: "second v2"]
+        )
+
+        undoManager.redo()
+        let redoneRevision = try document.serializedData()
+        try assertHighlightGraph(in: redoneRevision, expected: [firstName: "same"])
+
+        // Earlier snapshots remain independent immutable revisions.
+        try assertHighlightGraph(
+            in: firstRevision,
+            expected: [firstName: "same", secondName: "second v1"]
+        )
+    }
+
+    @Test
+    func changingHighlightColorNeverClearsItsAttachedNote() throws {
+        let source = TestPDFFactory.textDocument("color-safe source")
+        let document = try MathPDFDocument(data: try #require(source.dataRepresentation()))
+        let selection = try #require(
+            document.pdfDocument.findString("color-safe", withOptions: []).first
+        )
+        let highlight = try #require(document.addHighlight(from: selection, undoManager: nil))
+        document.updateContents(of: highlight, to: "color-safe note", undoManager: nil)
+        let nameKey = PDFAnnotationKey(rawValue: "/NM")
+        let name = try #require(highlight.value(forAnnotationKey: nameKey) as? String)
+        let undoManager = UndoManager()
+        undoManager.groupsByEvent = false
+        undoManager.beginUndoGrouping()
+        document.updateHighlightColor(of: highlight, to: .systemGreen, undoManager: undoManager)
+        undoManager.endUndoGrouping()
+
+        #expect(undoManager.canUndo)
+        #expect(highlight.color == .systemGreen)
+        #expect(highlight.contents == "color-safe note")
+        try assertHighlightGraph(
+            in: document.serializedData(),
+            expected: [name: "color-safe note"]
+        )
+
+        undoManager.undo()
+        #expect(highlight.contents == "color-safe note")
+        try assertHighlightGraph(
+            in: document.serializedData(),
+            expected: [name: "color-safe note"]
+        )
+    }
+
+    @Test
+    func interleavedDocumentsNeverLeakAnnotationOrPreambleState() throws {
+        let firstDocument = MathPDFDocument()
+        let secondDocument = MathPDFDocument()
+        let firstPage = try #require(firstDocument.pdfDocument.page(at: 0))
+        let secondPage = try #require(secondDocument.pdfDocument.page(at: 0))
+        let firstNote = try #require(firstDocument.addTextNote(
+            on: firstPage,
+            at: CGPoint(x: 100, y: 140),
+            undoManager: nil
+        ))
+        let secondNote = try #require(secondDocument.addTextNote(
+            on: secondPage,
+            at: CGPoint(x: 180, y: 220),
+            undoManager: nil
+        ))
+
+        firstDocument.preamble = #"\newcommand{\A}{A}"#
+        secondDocument.preamble = #"\newcommand{\B}{B}"#
+        firstDocument.updateContents(of: firstNote, to: "A1", undoManager: nil)
+        let a1 = try firstDocument.serializedData()
+        secondDocument.updateContents(of: secondNote, to: "B1", undoManager: nil)
+        let b1 = try secondDocument.serializedData()
+        firstDocument.updateContents(of: firstNote, to: "A2", undoManager: nil)
+        let a2 = try firstDocument.serializedData()
+        secondDocument.updateContents(of: secondNote, to: "B2", undoManager: nil)
+        let b2 = try secondDocument.serializedData()
+
+        try assertSingleTextNote(in: a1, contents: "A1", preamble: #"\newcommand{\A}{A}"#)
+        try assertSingleTextNote(in: b1, contents: "B1", preamble: #"\newcommand{\B}{B}"#)
+        try assertSingleTextNote(in: a2, contents: "A2", preamble: #"\newcommand{\A}{A}"#)
+        try assertSingleTextNote(in: b2, contents: "B2", preamble: #"\newcommand{\B}{B}"#)
+    }
+
+    @Test
+    func untrackedPDFKitMutationFailsClosed() throws {
+        let document = MathPDFDocument()
+        let page = try #require(document.pdfDocument.page(at: 0))
+        page.addAnnotation(TestPDFFactory.annotation(
+            .widget,
+            contents: "untracked",
+            bounds: CGRect(x: 80, y: 80, width: 120, height: 24)
+        ))
+        document.preamble = #"\newcommand{\Q}{\mathbb{Q}}"#
+
+        do {
+            _ = try document.serializedData()
+            Issue.record("An untracked PDFKit mutation was serialized instead of rejected.")
+        } catch let error as PDFPersistenceError {
+            guard case let .mappingFailed(reason) = error else {
+                Issue.record("Unexpected persistence error: \(error)")
+                return
+            }
+            #expect(reason.contains("untracked Widget"))
+        }
     }
 
     @Test
@@ -385,6 +601,44 @@ struct MathPDFDocumentTests {
         #expect(throws: CocoaError.self) {
             _ = try MathPDFDocument(data: Data("not a PDF".utf8))
         }
+    }
+
+    private func assertHighlightGraph(
+        in data: Data,
+        expected: [String: String]
+    ) throws {
+        let reloaded = try MathPDFDocument(data: data)
+        let page = try #require(reloaded.pdfDocument.page(at: 0))
+        let highlights = page.annotations.filter { $0.type == "Highlight" }
+        let popups = page.annotations.filter { $0.type == "Popup" }
+        #expect(highlights.count == expected.count)
+        #expect(popups.count == expected.count)
+
+        let nameKey = PDFAnnotationKey(rawValue: "/NM")
+        for highlight in highlights {
+            let name = try #require(highlight.value(forAnnotationKey: nameKey) as? String)
+            #expect(highlight.contents == expected[name])
+            let popup = try #require(highlight.popup)
+            #expect(page.annotations.contains { $0 === popup })
+            #expect((popup.value(forAnnotationKey: .parent) as? PDFAnnotation) === highlight)
+        }
+    }
+
+    private func assertSingleTextNote(
+        in data: Data,
+        contents: String,
+        preamble: String
+    ) throws {
+        let reloaded = try MathPDFDocument(data: data)
+        let page = try #require(reloaded.pdfDocument.page(at: 0))
+        let notes = page.annotations.filter { $0.type == "Text" }
+        #expect(notes.count == 1)
+        let note = try #require(notes.first)
+        #expect(note.contents == contents)
+        let popup = try #require(note.popup)
+        #expect(page.annotations.filter { $0.type == "Popup" }.count == 1)
+        #expect((popup.value(forAnnotationKey: .parent) as? PDFAnnotation) === note)
+        #expect(reloaded.preamble == preamble)
     }
 }
 

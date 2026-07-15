@@ -223,7 +223,11 @@ struct ContentView: View {
     }
 
     private func createTextNote(on page: PDFPage, at point: CGPoint) -> AnnotationNote? {
-        let annotation = controller.addTextNote(on: page, at: point, undoManager: undoManager)
+        guard let annotation = controller.addTextNote(
+            on: page,
+            at: point,
+            undoManager: undoManager
+        ) else { return nil }
         return controller.annotationActivated(annotation)
     }
 }
