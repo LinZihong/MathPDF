@@ -6,7 +6,7 @@ struct MathPDFApp: App {
     @NSApplicationDelegateAdaptor(MathPDFAppDelegate.self) private var appDelegate
 
     var body: some Scene {
-        DocumentGroup(newDocument: { MathPDFDocument() }) { configuration in
+        DocumentGroup(newDocument: { MathPDFDocument.newDocumentForCurrentProcess() }) { configuration in
             DocumentRootView(
                 document: configuration.document,
                 fileURL: configuration.fileURL
@@ -21,47 +21,30 @@ struct MathPDFApp: App {
     }
 }
 
-#if DEBUG
 private final class MathPDFAppDelegate: NSObject, NSApplicationDelegate {
-    private var uiTestWindow: NSWindow?
-    private var uiTestDocument: MathPDFDocument?
-
-    func applicationWillFinishLaunching(_ notification: Notification) {
-        guard isRunningUITest else { return }
-        NSApp.setActivationPolicy(.regular)
-
-        let document = MathPDFDocument()
-        let rootView = DocumentRootView(document: document, fileURL: nil)
-        let window = NSWindow(contentViewController: NSHostingController(rootView: rootView))
-        window.title = "MathPDF UI Fixture"
-        window.setContentSize(NSSize(width: 1180, height: 800))
-        window.styleMask = [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView]
-        window.toolbarStyle = .unified
-        window.center()
-        window.makeKeyAndOrderFront(nil)
-        NSApp.activate()
-
-        uiTestDocument = document
-        uiTestWindow = window
-    }
-
     func applicationDidFinishLaunching(_ notification: Notification) {
-        guard isRunningUITest, let uiTestWindow else { return }
-        NSApp.windows.compactMap { $0 as? NSOpenPanel }.forEach { $0.orderOut(nil) }
-        NSApp.activate()
-        uiTestWindow.makeKeyAndOrderFront(nil)
-    }
+#if DEBUG
+        guard ProcessInfo.processInfo.environment["MATHPDF_UI_FIXTURE"] == "annotated-reader" else {
+            return
+        }
 
-    private var isRunningUITest: Bool {
-        ProcessInfo.processInfo.environment["MATHPDF_UI_FIXTURE"] == "annotated-reader"
+        // A clean document-app launch may stop at the document shell without
+        // instantiating a document, so DocumentRootView never exists to load
+        // the deterministic in-memory fixture. Ask the real document
+        // controller for a normal DocumentGroup document; this preserves the
+        // shipping scene, responder chain, undo manager, autosave, and menus.
+        DispatchQueue.main.async {
+            let controller = NSDocumentController.shared
+            guard controller.documents.isEmpty else { return }
+            controller.newDocument(nil)
+        }
+#endif
     }
 }
-#else
-private final class MathPDFAppDelegate: NSObject, NSApplicationDelegate { }
-#endif
 
 private struct ReaderCommands: Commands {
     @FocusedValue(\.pdfViewProxy) private var pdfViewProxy
+    @FocusedValue(\.readerCommandContext) private var readerCommandContext
 
     var body: some Commands {
         CommandGroup(after: .saveItem) {
@@ -80,6 +63,14 @@ private struct ReaderCommands: Commands {
             .keyboardShortcut("f", modifiers: .command)
             .disabled(pdfViewProxy == nil)
         }
+
+        CommandMenu("Math") {
+            Button("Math Macros…") {
+                readerCommandContext?.togglePreambleInspector()
+            }
+            .keyboardShortcut("m", modifiers: [.command, .option])
+            .disabled(readerCommandContext == nil)
+        }
     }
 }
 
@@ -88,8 +79,6 @@ private struct DocumentRootView: View {
     let fileURL: URL?
 
     @StateObject private var controller: ReaderDocumentController
-    @State private var didLoadUITestFixture = false
-
     init(document: MathPDFDocument, fileURL: URL?) {
         self.document = document
         self.fileURL = fileURL
@@ -99,12 +88,5 @@ private struct DocumentRootView: View {
     var body: some View {
         ContentView(controller: controller, fileURL: fileURL)
             .frame(minWidth: 820, minHeight: 560)
-            .task {
-#if DEBUG
-                guard !didLoadUITestFixture else { return }
-                didLoadUITestFixture = true
-                document.loadUITestFixtureIfRequested()
-#endif
-            }
     }
 }

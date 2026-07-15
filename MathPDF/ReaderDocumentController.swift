@@ -1,11 +1,6 @@
 import Combine
 import PDFKit
 
-enum ReaderInspectorDestination {
-    case note(AnnotationNote, startsEditing: Bool)
-    case preamble
-}
-
 @MainActor
 final class ReaderDocumentController: ObservableObject {
     @Published var sidebarMode: ReaderSidebarMode = .contents
@@ -13,9 +8,13 @@ final class ReaderDocumentController: ObservableObject {
     @Published var outline: [DocumentOutlineItem] = []
     @Published var selectedNoteID: AnnotationNote.ID?
     @Published var navigationRequest: ReaderNavigationRequest?
-    @Published var inspectorDestination: ReaderInspectorDestination?
+    @Published var isPreambleInspectorPresented = false
     @Published var searchText = ""
     @Published var readerTool: ReaderTool = .browse
+    @Published var highlightColor: AnnotationColorChoice = .yellow
+    @Published var annotationAuthoringNotice: AnnotationAuthoringNotice?
+    @Published private(set) var pendingPresentedNoteID: AnnotationNote.ID?
+    @Published private(set) var presentedNoteID: AnnotationNote.ID?
 
     let document: MathPDFDocument
     let readerProxy = PDFViewProxy()
@@ -28,7 +27,7 @@ final class ReaderDocumentController: ObservableObject {
 
         document.$annotationRevision
             .dropFirst()
-            .sink { [weak self] _ in self?.rebuildIndex() }
+            .sink { [weak self] _ in self?.rebuildNotes() }
             .store(in: &cancellables)
 
         readerProxy.objectWillChange
@@ -37,30 +36,81 @@ final class ReaderDocumentController: ObservableObject {
     }
 
     func rebuildIndex() {
-        notes = PDFNoteExtractor.extractNotes(from: document.pdfDocument)
         outline = PDFNoteExtractor.extractOutline(from: document.pdfDocument)
-        if let selectedNoteID, !notes.contains(where: { $0.id == selectedNoteID }) {
+        rebuildNotes()
+    }
+
+    private func rebuildNotes() {
+        notes = PDFNoteExtractor.extractNotes(from: document.pdfDocument)
+        let noteIDs = Set(notes.map(\.id))
+        if let selectedNoteID, !noteIDs.contains(selectedNoteID) {
             self.selectedNoteID = nil
         }
-        if case let .note(pinnedNote, startsEditing) = inspectorDestination,
-           let refreshed = note(for: pinnedNote.annotation, includeEmptyContents: true) {
-            inspectorDestination = .note(refreshed, startsEditing: startsEditing)
-        } else if case .note = inspectorDestination {
-            inspectorDestination = nil
+        if let pendingPresentedNoteID, !noteIDs.contains(pendingPresentedNoteID) {
+            self.pendingPresentedNoteID = nil
+        }
+        if let presentedNoteID, !noteIDs.contains(presentedNoteID) {
+            self.presentedNoteID = nil
         }
     }
 
     func selectNote(_ note: AnnotationNote) {
+        let wasAlreadySelected = selectedNoteID == note.id
         selectedNoteID = note.id
-        navigationRequest = ReaderNavigationRequest(
+        if wasAlreadySelected {
+            guard pendingPresentedNoteID != note.id, presentedNoteID != note.id else { return }
+        }
+        navigateToNote(note)
+    }
+
+    func annotationPresentationChanged(noteID: AnnotationNote.ID, isPresented: Bool) {
+        if isPresented {
+            presentedNoteID = noteID
+            if pendingPresentedNoteID == noteID {
+                pendingPresentedNoteID = nil
+            }
+        } else if presentedNoteID == noteID {
+            presentedNoteID = nil
+        }
+    }
+
+    func selectNote(id: AnnotationNote.ID?) {
+        guard let id else {
+            selectedNoteID = nil
+            return
+        }
+        guard let note = notes.first(where: { $0.id == id }) else { return }
+        selectNote(note)
+    }
+
+    func navigateToNote(_ note: AnnotationNote) {
+        let request = ReaderNavigationRequest(
             token: UUID(),
             pageIndex: note.pageIndex,
             point: nil,
             bounds: note.bounds,
             noteID: note.id,
             opensNote: !note.trimmedContents.isEmpty,
+            startsEditing: false,
             annotation: note.annotation
         )
+        navigationRequest = request
+        pendingPresentedNoteID = request.opensNote ? note.id : nil
+    }
+
+    func presentNote(_ note: AnnotationNote, startsEditing: Bool) {
+        selectedNoteID = notes.contains(where: { $0.id == note.id }) ? note.id : nil
+        navigationRequest = ReaderNavigationRequest(
+            token: UUID(),
+            pageIndex: note.pageIndex,
+            point: nil,
+            bounds: note.bounds,
+            noteID: note.id,
+            opensNote: true,
+            startsEditing: startsEditing,
+            annotation: note.annotation
+        )
+        pendingPresentedNoteID = note.id
     }
 
     func selectOutline(_ item: DocumentOutlineItem) {
@@ -72,6 +122,7 @@ final class ReaderDocumentController: ObservableObject {
             bounds: nil,
             noteID: nil,
             opensNote: false,
+            startsEditing: false,
             annotation: nil
         )
     }
@@ -82,16 +133,28 @@ final class ReaderDocumentController: ObservableObject {
         return note
     }
 
-    func pin(_ note: AnnotationNote, startsEditing: Bool = false) {
-        inspectorDestination = .note(note, startsEditing: startsEditing)
+    var canAuthorAnnotations: Bool {
+        document.editingError == nil
+    }
+
+    var annotationAuthoringUnavailableReason: String? {
+        document.editingError?.localizedDescription
+    }
+
+    func capabilities(for annotation: PDFAnnotation) -> AnnotationNoteCapabilities {
+        let canEdit = document.canEdit(annotation)
+        let canChangeColor = document.canChangeColor(of: annotation)
+        return AnnotationNoteCapabilities(
+            canEditContents: canEdit,
+            canDelete: canEdit,
+            canChangeColor: canChangeColor,
+            editingUnavailableReason: document.editingUnavailableReason(for: annotation),
+            colorUnavailableReason: document.colorEditingUnavailableReason(for: annotation)
+        )
     }
 
     func togglePreambleInspector() {
-        if case .preamble = inspectorDestination {
-            inspectorDestination = nil
-        } else {
-            inspectorDestination = .preamble
-        }
+        isPreambleInspectorPresented.toggle()
     }
 
     func note(for annotation: PDFAnnotation, includeEmptyContents: Bool) -> AnnotationNote? {
@@ -114,9 +177,6 @@ final class ReaderDocumentController: ObservableObject {
 
     func removeNote(_ note: AnnotationNote, undoManager: UndoManager?) {
         document.removeAnnotation(note.annotation, undoManager: undoManager)
-        if case let .note(pinnedNote, _) = inspectorDestination, pinnedNote.id == note.id {
-            inspectorDestination = nil
-        }
         if selectedNoteID == note.id {
             selectedNoteID = nil
         }
@@ -124,7 +184,37 @@ final class ReaderDocumentController: ObservableObject {
 
     func addHighlight(undoManager: UndoManager?) -> PDFAnnotation? {
         guard let selection = readerProxy.currentSelection else { return nil }
-        let annotation = document.addHighlight(from: selection, undoManager: undoManager)
+        annotationAuthoringNotice = nil
+        return addHighlight(from: selection, undoManager: undoManager)
+    }
+
+    func addHighlightWithNote(undoManager: UndoManager?) -> PDFAnnotation? {
+        guard let selection = readerProxy.currentSelection else { return nil }
+        return addHighlightWithNote(from: selection, undoManager: undoManager)
+    }
+
+    func addHighlightWithNote(
+        from selection: PDFSelection,
+        undoManager: UndoManager?
+    ) -> PDFAnnotation? {
+        annotationAuthoringNotice = nil
+        let pageIDs = Set(selection.pages.map(ObjectIdentifier.init))
+        guard pageIDs.count == 1 else {
+            annotationAuthoringNotice = .multiPageHighlightNote
+            return nil
+        }
+        return addHighlight(from: selection, undoManager: undoManager)
+    }
+
+    private func addHighlight(
+        from selection: PDFSelection,
+        undoManager: UndoManager?
+    ) -> PDFAnnotation? {
+        let annotation = document.addHighlight(
+            from: selection,
+            color: highlightColor.nsColor,
+            undoManager: undoManager
+        )
         if annotation != nil {
             readerProxy.clearSelection()
         }

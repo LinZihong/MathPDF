@@ -31,9 +31,55 @@ final class MathPDFUITests: XCTestCase {
         note.click()
 
         XCTAssertTrue(element("note-rendered-content").waitForExistence(timeout: 8))
-        XCTAssertEqual(app.popovers.count, 1, "One annotation must never produce competing PDFKit and MathPDF popovers")
+        XCTAssertEqual(
+            app.descendants(matching: .any).matching(identifier: "annotation-note-surface").count,
+            1,
+            "One annotation must produce one MathPDF reading surface"
+        )
+        XCTAssertEqual(app.popovers.count, 0, "The integrated note surface must not compete with a PDFKit popover")
         XCTAssertTrue(app.buttons["note-edit"].exists)
+        attachMathPDFWindow(named: "note-reading-surface")
+        let noteActions = app.menuButtons["note-actions"]
+        XCTAssertTrue(noteActions.waitForExistence(timeout: 5))
+        XCTAssertEqual(noteActions.value as? String, "Yellow")
+        noteActions.click()
+        let green = app.menuItems["Green"]
+        XCTAssertTrue(green.waitForExistence(timeout: 5))
+        green.click()
+        XCTAssertEqual(noteActions.value as? String, "Green")
+        attachMathPDFWindow(named: "note-recolored-green")
+        app.typeKey("z", modifierFlags: .command)
+        let undoRestoredVisibleColor = XCTNSPredicateExpectation(
+            predicate: NSPredicate(format: "value == %@", "Yellow"),
+            object: noteActions
+        )
+        XCTAssertEqual(
+            XCTWaiter.wait(for: [undoRestoredVisibleColor], timeout: 5),
+            .completed,
+            "Undo must refresh the open surface to the document's restored color"
+        )
         XCTAssertEqual(app.textFields["Page number"].value as? String, "2")
+        let badge = app.buttons.matching(
+            NSPredicate(format: "label BEGINSWITH %@", "Comment on highlight, page 2")
+        ).firstMatch
+        XCTAssertTrue(
+            badge.exists,
+            "A commented highlight must remain discoverable on the page"
+        )
+
+        app.buttons["Close Note"].click()
+        XCTAssertFalse(element("annotation-note-surface").exists)
+        badge.click()
+        XCTAssertTrue(
+            element("note-rendered-content").waitForExistence(timeout: 5),
+            "The on-page comment affordance must open its note without the sidebar"
+        )
+        app.buttons["Close Note"].click()
+        note.click()
+        XCTAssertTrue(
+            element("note-rendered-content").waitForExistence(timeout: 5),
+            "Clicking an already-selected sidebar row must reopen its note"
+        )
     }
 
     @MainActor
@@ -46,14 +92,24 @@ final class MathPDFUITests: XCTestCase {
         app.buttons["note-edit"].click()
         XCTAssertTrue(element("note-editor").waitForExistence(timeout: 5))
 
-        app.buttons["Close Inspector"].click()
-        app.buttons["Document Preamble"].click()
+        app.buttons["Close Note"].click()
+        app.menuBars.menuBarItems["Math"].click()
+        app.menuItems["Math Macros…"].click()
         XCTAssertTrue(app.staticTexts["Math Macros"].waitForExistence(timeout: 5))
-        XCTAssertTrue(app.staticTexts["Stored in this PDF"].exists)
+        XCTAssertTrue(app.staticTexts["Document settings"].exists)
     }
 
     private func element(_ identifier: String) -> XCUIElement {
         app.descendants(matching: .any)[identifier]
+    }
+
+    private func attachMathPDFWindow(named name: String) {
+        let window = app.windows.firstMatch
+        XCTAssertTrue(window.exists)
+        let attachment = XCTAttachment(screenshot: window.screenshot())
+        attachment.name = name
+        attachment.lifetime = .keepAlways
+        add(attachment)
     }
 
     private func quitAppIfRunning() {

@@ -426,6 +426,13 @@ enum MathNoteRenderer {
           background: transparent;
           min-height: 100%;
           overflow-y: auto;
+          scrollbar-width: none;
+        }
+
+        ::-webkit-scrollbar {
+          width: 0;
+          height: 0;
+          background: transparent;
         }
 
         body {
@@ -575,18 +582,26 @@ enum MathNoteRenderer {
 struct MathNoteView: View {
     let rawText: String
     let preamble: String
+    let minimumContentHeight: CGFloat
     let maximumContentHeight: CGFloat?
 
     private let debugSettings = MathRendererDebugSettings.current()
 
     @State private var renderedDocument: MathRenderedDocument?
-    @State private var contentHeight: CGFloat = 96
+    @State private var contentHeight: CGFloat
     @State private var diagnostics = MathRendererDiagnostics.initial(for: .production)
 
-    init(rawText: String, preamble: String = "", maximumContentHeight: CGFloat? = nil) {
+    init(
+        rawText: String,
+        preamble: String = "",
+        minimumContentHeight: CGFloat = 96,
+        maximumContentHeight: CGFloat? = nil
+    ) {
         self.rawText = rawText
         self.preamble = preamble
+        self.minimumContentHeight = minimumContentHeight
         self.maximumContentHeight = maximumContentHeight
+        _contentHeight = State(initialValue: minimumContentHeight)
     }
 
     var body: some View {
@@ -598,6 +613,7 @@ struct MathNoteView: View {
                         baseURL: renderedDocument.baseURL,
                         enablesHeightMessages: renderedDocument.enablesHeightMessages,
                         diagnosticsEnabled: renderedDocument.diagnosticsEnabled,
+                        minimumContentHeight: minimumContentHeight,
                         diagnostics: $diagnostics,
                         contentHeight: $contentHeight
                     )
@@ -643,7 +659,7 @@ struct MathNoteView: View {
     }
 
     private var renderedContentFrameHeight: CGFloat {
-        let intrinsicHeight = max(contentHeight, 96)
+        let intrinsicHeight = max(contentHeight, minimumContentHeight)
         guard let maximumContentHeight else {
             return intrinsicHeight
         }
@@ -657,6 +673,7 @@ private struct MathNoteWebView: NSViewRepresentable {
     let baseURL: URL
     let enablesHeightMessages: Bool
     let diagnosticsEnabled: Bool
+    let minimumContentHeight: CGFloat
     @Binding var diagnostics: MathRendererDiagnostics
     @Binding var contentHeight: CGFloat
 
@@ -664,6 +681,7 @@ private struct MathNoteWebView: NSViewRepresentable {
         Coordinator(
             diagnostics: $diagnostics,
             contentHeight: $contentHeight,
+            minimumContentHeight: minimumContentHeight,
             diagnosticsEnabled: diagnosticsEnabled
         )
     }
@@ -705,14 +723,17 @@ private struct MathNoteWebView: NSViewRepresentable {
         var lastLoadedHTML: String?
         private var sampleToken = 0
         private let diagnosticsEnabled: Bool
+        private let minimumContentHeight: CGFloat
 
         init(
             diagnostics: Binding<MathRendererDiagnostics>,
             contentHeight: Binding<CGFloat>,
+            minimumContentHeight: CGFloat,
             diagnosticsEnabled: Bool
         ) {
             _diagnostics = diagnostics
             _contentHeight = contentHeight
+            self.minimumContentHeight = minimumContentHeight
             self.diagnosticsEnabled = diagnosticsEnabled
         }
 
@@ -736,7 +757,7 @@ private struct MathNoteWebView: NSViewRepresentable {
                 return
             }
 
-            contentHeight = max(CGFloat(number.doubleValue), 96)
+            contentHeight = max(CGFloat(number.doubleValue), minimumContentHeight)
             diagnostics.lastEvent = "height-message"
         }
 

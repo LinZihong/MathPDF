@@ -49,6 +49,7 @@ enum PDFNoteExtractor {
             sourceText: sourceText,
             author: annotation.userName?.trimmingCharacters(in: .whitespacesAndNewlines).nilIfEmpty,
             bounds: annotation.bounds,
+            color: annotation.color,
             annotation: annotation
         )
     }

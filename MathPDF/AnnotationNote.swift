@@ -1,4 +1,5 @@
 import CoreGraphics
+import AppKit
 import PDFKit
 
 struct AnnotationNote: Identifiable {
@@ -9,6 +10,7 @@ struct AnnotationNote: Identifiable {
     let sourceText: String
     let author: String?
     let bounds: CGRect
+    let color: NSColor
     let annotation: PDFAnnotation
 
     var trimmedContents: String {
@@ -28,7 +30,10 @@ struct AnnotationNote: Identifiable {
 
 extension AnnotationNote: Equatable {
     static func == (lhs: AnnotationNote, rhs: AnnotationNote) -> Bool {
-        lhs.id == rhs.id && lhs.contents == rhs.contents && lhs.bounds == rhs.bounds
+        lhs.id == rhs.id
+            && lhs.contents == rhs.contents
+            && lhs.bounds == rhs.bounds
+            && lhs.color == rhs.color
     }
 }
 
@@ -54,6 +59,18 @@ enum ReaderTool: String, CaseIterable, Identifiable {
     var id: String { rawValue }
 }
 
+struct AnnotationAuthoringNotice: Identifiable, Equatable {
+    let id: String
+    let title: String
+    let message: String
+
+    static let multiPageHighlightNote = AnnotationAuthoringNotice(
+        id: "multi-page-highlight-note",
+        title: "Use a Single-Page Selection",
+        message: "A PDF note belongs to one highlight on one page. Shorten the selection, or use Highlight to mark the full multi-page passage."
+    )
+}
+
 struct ReaderNavigationRequest: Equatable {
     let token: UUID
     let pageIndex: Int
@@ -61,6 +78,7 @@ struct ReaderNavigationRequest: Equatable {
     let bounds: CGRect?
     let noteID: String?
     let opensNote: Bool
+    let startsEditing: Bool
     let annotation: PDFAnnotation?
 
     static func == (lhs: ReaderNavigationRequest, rhs: ReaderNavigationRequest) -> Bool {

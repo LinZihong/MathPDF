@@ -6,8 +6,11 @@
 #include <qpdf/QPDF.hh>
 #include <qpdf/QPDFObjGen.hh>
 #include <qpdf/QPDFObjectHandle.hh>
+#include <qpdf/QPDFPageObjectHelper.hh>
 #include <qpdf/QPDFWriter.hh>
 
+#include <algorithm>
+#include <cmath>
 #include <map>
 #include <regex>
 #include <set>
@@ -49,18 +52,6 @@ NSString *warningSummary(QPDF& pdf)
     return messages.count == 0 ? @"" : [messages componentsJoinedByString:@"; "];
 }
 
-NSString *nameWithoutSlash(QPDFObjectHandle object)
-{
-    if (!object.isName()) {
-        return @"";
-    }
-    std::string name = object.getName();
-    if (!name.empty() && name.front() == '/') {
-        name.erase(name.begin());
-    }
-    return stringFromUTF8(name);
-}
-
 NSString *stringValue(QPDFObjectHandle object)
 {
     if (!object.isString()) {
@@ -76,18 +67,6 @@ NSNumber *integerValue(QPDFObjectHandle object, NSInteger fallback = 0)
         value = fallback;
     }
     return @(value);
-}
-
-NSDictionary *referenceDictionary(QPDFObjectHandle object)
-{
-    QPDFObjGen reference = object.getObjGen();
-    if (!reference.isIndirect()) {
-        return @{};
-    }
-    return @{
-        @"object": @(reference.getObj()),
-        @"generation": @(reference.getGen()),
-    };
 }
 
 bool isSignatureDictionary(QPDFObjectHandle object)
@@ -127,6 +106,9 @@ struct AnnotationNode {
     std::string subtype;
     QPDFObjGen popup;
     QPDFObjGen parent;
+    bool popupInferred{false};
+    bool parentInferred{false};
+    bool requiresPageInsertion{false};
 };
 
 NSString *fingerprint(AnnotationNode const& node)
@@ -137,6 +119,22 @@ NSString *fingerprint(AnnotationNode const& node)
     std::string value = node.subtype + "|" + rect.unparse() + "|" +
                         contents.unparse() + "|" + name.unparse();
     return stringFromUTF8(value);
+}
+
+NSArray<NSNumber *> *numberValues(QPDFObjectHandle object)
+{
+    if (!object.isArray()) {
+        return @[];
+    }
+    NSMutableArray<NSNumber *> *values = [NSMutableArray array];
+    for (int index = 0; index < object.getArrayNItems(); ++index) {
+        double value = 0;
+        if (!object.getArrayItem(index).getValueAsNumber(value)) {
+            return @[];
+        }
+        [values addObject:@(value)];
+    }
+    return values;
 }
 
 NSDictionary *annotationDictionary(AnnotationNode const& node)
@@ -153,6 +151,15 @@ NSDictionary *annotationDictionary(AnnotationNode const& node)
             ? @(node.object.getKey("/Open").getBoolValue())
             : @NO,
         @"hasAppearance": @(node.object.hasKey("/AP")),
+        @"rectangle": numberValues(node.object.getKey("/Rect")),
+        @"color": numberValues(node.object.getKey("/C")),
+        @"modificationDate": stringValue(node.object.getKey("/M")),
+        @"userName": stringValue(node.object.getKey("/T")),
+        @"subject": stringValue(node.object.getKey("/Subj")),
+        @"richContents": stringValue(node.object.getKey("/RC")),
+        @"popupInferred": @(node.popupInferred),
+        @"parentInferred": @(node.parentInferred),
+        @"requiresPageInsertion": @(node.requiresPageInsertion),
     } mutableCopy];
     if (node.popup.isIndirect()) {
         result[@"popup"] = @{
@@ -175,19 +182,154 @@ struct InventoryResult {
     NSString *graphFailure;
 };
 
+std::string subtypeName(QPDFObjectHandle object)
+{
+    auto subtype = object.getKey("/Subtype");
+    if (!subtype.isName()) {
+        return {};
+    }
+    std::string value = subtype.getName();
+    if (!value.empty() && value.front() == '/') {
+        value.erase(value.begin());
+    }
+    return value;
+}
+
+bool numericArray(QPDFObjectHandle object, size_t count, std::vector<double>& values)
+{
+    if (!object.isArray() || static_cast<size_t>(object.getArrayNItems()) != count) {
+        return false;
+    }
+    values.clear();
+    values.reserve(count);
+    for (size_t index = 0; index < count; ++index) {
+        double value = 0;
+        if (!object.getArrayItem(static_cast<int>(index)).getValueAsNumber(value)) {
+            return false;
+        }
+        values.push_back(value);
+    }
+    return true;
+}
+
+bool numbersMatch(double lhs, double rhs)
+{
+    return std::abs(lhs - rhs) < 0.000001;
+}
+
+bool colorsMatchExactly(QPDFObjectHandle lhs, QPDFObjectHandle rhs)
+{
+    if (!lhs.isArray() || !rhs.isArray() || lhs.getArrayNItems() != rhs.getArrayNItems()) {
+        return false;
+    }
+    for (int index = 0; index < lhs.getArrayNItems(); ++index) {
+        double left = 0;
+        double right = 0;
+        if (!lhs.getArrayItem(index).getValueAsNumber(left) ||
+            !rhs.getArrayItem(index).getValueAsNumber(right) ||
+            !numbersMatch(left, right)) {
+            return false;
+        }
+    }
+    return lhs.getArrayNItems() > 0;
+}
+
+bool matchesLegacyPopupGeometry(
+    AnnotationNode const& popup,
+    AnnotationNode const& owner,
+    QPDFObjectHandle page
+)
+{
+    std::vector<double> popupRect;
+    std::vector<double> ownerRect;
+    if (!numericArray(popup.object.getKey("/Rect"), 4, popupRect) ||
+        !numericArray(owner.object.getKey("/Rect"), 4, ownerRect)) {
+        return false;
+    }
+
+    QPDFPageObjectHelper pageHelper(page);
+    auto cropObject = pageHelper.getAttribute("/CropBox", false);
+    if (cropObject.isNull()) {
+        cropObject = pageHelper.getAttribute("/MediaBox", false);
+    }
+    std::vector<double> crop;
+    if (!numericArray(cropObject, 4, crop)) {
+        return false;
+    }
+
+    double cropMinX = std::min(crop[0], crop[2]);
+    double cropMaxX = std::max(crop[0], crop[2]);
+    double cropMinY = std::min(crop[1], crop[3]);
+    double cropMaxY = std::max(crop[1], crop[3]);
+    double expectedX = std::min(std::max(ownerRect[2] + 4.0, cropMinX), cropMaxX - 72.0);
+    double expectedY = std::min(std::max(ownerRect[3] + 4.0, cropMinY), cropMaxY - 36.0);
+
+    return numbersMatch(popupRect[0], expectedX) &&
+           numbersMatch(popupRect[1], expectedY) &&
+           numbersMatch(popupRect[2] - popupRect[0], 72.0) &&
+           numbersMatch(popupRect[3] - popupRect[1], 36.0);
+}
+
+bool isExactLegacyOrphanPair(
+    AnnotationNode const& popup,
+    AnnotationNode const& owner,
+    QPDFObjectHandle page
+)
+{
+    long long popupFlags = 0;
+    long long ownerFlags = 0;
+    return popup.subtype == "Popup" && owner.subtype == "Highlight" &&
+           popup.pageIndex == owner.pageIndex && std::abs(popup.slot - owner.slot) == 1 &&
+           !popup.parent.isIndirect() && !owner.popup.isIndirect() &&
+           !popup.object.hasKey("/Contents") && !popup.object.hasKey("/NM") &&
+           !popup.object.hasKey("/Open") && !popup.object.hasKey("/AP") &&
+           popup.object.getKey("/M").isString() &&
+           popup.object.getKey("/F").getValueAsInt(popupFlags) && popupFlags == 4 &&
+           owner.object.getKey("/Contents").isString() &&
+           !owner.object.getKey("/Contents").getUTF8Value().empty() &&
+           !owner.object.hasKey("/NM") && owner.object.hasKey("/AP") &&
+           owner.object.getKey("/F").getValueAsInt(ownerFlags) && ownerFlags == 4 &&
+           colorsMatchExactly(popup.object.getKey("/C"), owner.object.getKey("/C")) &&
+           matchesLegacyPopupGeometry(popup, owner, page);
+}
+
+bool isExactOffArrayClone(
+    QPDF& pdf,
+    AnnotationNode const& owner,
+    QPDFObjectHandle popupObject,
+    QPDFObjGen popupReference,
+    std::map<QPDFObjGen, size_t> const& nodeByReference
+)
+{
+    auto cloneReference = popupObject.getKey("/Parent").getObjGen();
+    if (!cloneReference.isIndirect() || cloneReference == owner.reference ||
+        nodeByReference.contains(cloneReference)) {
+        return false;
+    }
+    auto clone = pdf.getObject(cloneReference);
+    if (!clone.isDictionary() || clone.getKey("/Popup").getObjGen() != popupReference) {
+        return false;
+    }
+    // The observed Quartz/PDFKit legacy object is a complete duplicate of the
+    // page owner, including its /Popup edge. A partial fingerprint would admit
+    // a near-clone whose unexamined metadata differs, making it unsafe to
+    // redirect the Popup's /Parent. qpdf canonicalizes dictionary key order in
+    // unparseResolved(), so exact equality is deliberately the narrow rule.
+    return subtypeName(clone) == owner.subtype &&
+           clone.unparseResolved() == owner.object.unparseResolved();
+}
+
 InventoryResult inventoryAnnotations(QPDF& pdf, bool requireReciprocal = false)
 {
-    NSMutableArray *pagesJSON = [NSMutableArray array];
     std::vector<AnnotationNode> nodes;
     std::map<QPDFObjGen, size_t> nodeByReference;
-    std::map<std::string, QPDFObjGen> referenceByName;
+    std::set<std::pair<int, std::string>> referenceNameByPage;
     bool supported = true;
     NSString *failure = @"";
 
     auto const& pages = pdf.getAllPages();
     for (size_t pageIndex = 0; pageIndex < pages.size(); ++pageIndex) {
         auto page = pages.at(pageIndex);
-        NSMutableArray *annotationsJSON = [NSMutableArray array];
         auto annots = page.getKey("/Annots");
         if (!annots.isNull() && !annots.isArray()) {
             supported = false;
@@ -205,11 +347,7 @@ InventoryResult inventoryAnnotations(QPDF& pdf, bool requireReciprocal = false)
                     supported = false;
                     failure = @"Direct annotation dictionaries are not editable yet.";
                 }
-                auto subtypeObject = annotation.getKey("/Subtype");
-                std::string subtype = subtypeObject.isName() ? subtypeObject.getName() : "";
-                if (!subtype.empty() && subtype.front() == '/') {
-                    subtype.erase(subtype.begin());
-                }
+                std::string subtype = subtypeName(annotation);
                 AnnotationNode node{
                     static_cast<int>(pageIndex),
                     slot,
@@ -229,32 +367,131 @@ InventoryResult inventoryAnnotations(QPDF& pdf, bool requireReciprocal = false)
                 }
                 auto name = annotation.getKey("/NM");
                 if (name.isString() && !name.getUTF8Value().empty()) {
-                    if (!referenceByName.emplace(name.getUTF8Value(), reference).second) {
+                    auto key = std::make_pair(static_cast<int>(pageIndex), name.getUTF8Value());
+                    if (!referenceNameByPage.insert(key).second) {
                         supported = false;
-                        failure = @"Annotation /NM identifiers are not unique.";
+                        failure = @"Annotation /NM identifiers are not unique on their page.";
                     }
                 }
-                [annotationsJSON addObject:annotationDictionary(node)];
             }
         }
+    }
 
-        QPDFObjGen pageReference = page.getObjGen();
-        [pagesJSON addObject:@{
-            @"index": @(pageIndex),
-            @"object": @(pageReference.getObj()),
-            @"generation": @(pageReference.getGen()),
-            @"annotations": annotationsJSON,
-        }];
+    // The macOS Quartz/PDFKit writer has emitted a narrow legacy shape in
+    // which a page owner references an off-/Annots Popup whose raw /Parent
+    // targets an off-array clone of that owner. Accept only a unique explicit
+    // owner edge and an exact fingerprint-equivalent clone. The real Popup is
+    // then surfaced as a page annotation and its /Parent is repaired on the
+    // first dirty save; a no-op snapshot still returns the original bytes.
+    if (!requireReciprocal) {
+        std::map<QPDFObjGen, int> rawInbound;
+        for (auto const& node: nodes) {
+            if (node.popup.isIndirect()) {
+                ++rawInbound[node.popup];
+            }
+        }
+        size_t pageNodeCount = nodes.size();
+        for (size_t index = 0; index < pageNodeCount; ++index) {
+            auto const& owner = nodes[index];
+            if (!owner.popup.isIndirect() || nodeByReference.contains(owner.popup)) {
+                continue;
+            }
+            auto popup = pdf.getObject(owner.popup);
+            if (rawInbound[owner.popup] != 1 || !popup.isDictionary() ||
+                subtypeName(popup) != "Popup" ||
+                !isExactOffArrayClone(
+                    pdf, owner, popup, owner.popup, nodeByReference
+                )) {
+                supported = false;
+                failure = @"An annotation /Popup edge targets an unsupported off-page annotation.";
+                continue;
+            }
+            auto name = popup.getKey("/NM");
+            if (name.isString() && !name.getUTF8Value().empty()) {
+                auto key = std::make_pair(owner.pageIndex, name.getUTF8Value());
+                if (!referenceNameByPage.insert(key).second) {
+                    supported = false;
+                    failure = @"Annotation /NM identifiers are not unique on their page.";
+                    continue;
+                }
+            }
+            AnnotationNode popupNode{
+                owner.pageIndex,
+                -1,
+                popup,
+                owner.popup,
+                "Popup",
+                popup.getKey("/Popup").getObjGen(),
+                owner.reference,
+                false,
+                true,
+                true,
+            };
+            nodeByReference.emplace(owner.popup, nodes.size());
+            nodes.push_back(popupNode);
+        }
     }
 
     std::map<QPDFObjGen, int> popupInboundCount;
     for (auto const& node: nodes) {
         if (node.popup.isIndirect()) {
             ++popupInboundCount[node.popup];
+        }
+    }
+
+    // Repair only the exact legacy orphan companion emitted by the app's
+    // historic Quartz path. Geometry, color, adjacency, annotation shape, and
+    // the one-to-one assignment must all be unique. Anything else remains
+    // read-only instead of being guessed at.
+    if (!requireReciprocal) {
+        std::vector<std::pair<size_t, size_t>> proposed;
+        std::map<size_t, int> ownerUseCount;
+        for (size_t popupIndex = 0; popupIndex < nodes.size(); ++popupIndex) {
+            auto const& popup = nodes[popupIndex];
+            if (popup.subtype != "Popup" || popup.parent.isIndirect() ||
+                popupInboundCount[popup.reference] != 0 || popup.slot < 0) {
+                continue;
+            }
+            std::vector<size_t> candidates;
+            for (size_t ownerIndex = 0; ownerIndex < nodes.size(); ++ownerIndex) {
+                auto const& owner = nodes[ownerIndex];
+                if (owner.slot >= 0 && isExactLegacyOrphanPair(
+                        popup, owner, pages.at(static_cast<size_t>(popup.pageIndex))
+                    )) {
+                    candidates.push_back(ownerIndex);
+                }
+            }
+            if (candidates.size() == 1) {
+                proposed.emplace_back(popupIndex, candidates.front());
+                ++ownerUseCount[candidates.front()];
+            }
+        }
+        for (auto const& pair: proposed) {
+            if (ownerUseCount[pair.second] != 1) {
+                continue;
+            }
+            nodes[pair.second].popup = nodes[pair.first].reference;
+            nodes[pair.second].popupInferred = true;
+            nodes[pair.first].parent = nodes[pair.second].reference;
+            nodes[pair.first].parentInferred = true;
+        }
+
+        popupInboundCount.clear();
+        for (auto const& node: nodes) {
+            if (node.popup.isIndirect()) {
+                ++popupInboundCount[node.popup];
+            }
+        }
+    }
+
+    for (auto const& node: nodes) {
+        if (node.popup.isIndirect()) {
             auto popup = nodeByReference.find(node.popup);
             if (popup == nodeByReference.end() || nodes[popup->second].subtype != "Popup") {
+                if (supported) {
+                    failure = @"An annotation /Popup edge does not target a page Popup annotation.";
+                }
                 supported = false;
-                failure = @"An annotation /Popup edge does not target a page Popup annotation.";
                 continue;
             }
             auto const& popupNode = nodes[popup->second];
@@ -307,6 +544,28 @@ InventoryResult inventoryAnnotations(QPDF& pdf, bool requireReciprocal = false)
             supported = false;
             failure = @"A written Popup is missing its reciprocal /Parent edge.";
         }
+    }
+
+    NSMutableArray *pagesJSON = [NSMutableArray array];
+    for (size_t pageIndex = 0; pageIndex < pages.size(); ++pageIndex) {
+        NSMutableArray *annotationsJSON = [NSMutableArray array];
+        for (auto const& node: nodes) {
+            if (node.pageIndex == static_cast<int>(pageIndex) && node.slot >= 0) {
+                [annotationsJSON addObject:annotationDictionary(node)];
+            }
+        }
+        for (auto const& node: nodes) {
+            if (node.pageIndex == static_cast<int>(pageIndex) && node.slot < 0) {
+                [annotationsJSON addObject:annotationDictionary(node)];
+            }
+        }
+        QPDFObjGen pageReference = pages.at(pageIndex).getObjGen();
+        [pagesJSON addObject:@{
+            @"index": @(pageIndex),
+            @"object": @(pageReference.getObj()),
+            @"generation": @(pageReference.getGen()),
+            @"annotations": annotationsJSON,
+        }];
     }
 
     return {pagesJSON, supported, failure};
@@ -416,12 +675,21 @@ QPDFObjectHandle resolveOrigin(
     if (page.getObjGen() != QPDFObjGen(pageObject, pageGeneration)) {
         throw std::runtime_error("The source page identity changed.");
     }
-    auto annots = page.getKey("/Annots");
-    if (!annots.isArray() || slot < 0 || slot >= annots.getArrayNItems()) {
-        throw std::runtime_error("The source annotation slot changed.");
+    QPDFObjGen annotationReference(object, generation);
+    QPDFObjectHandle annotation;
+    if (slot == -1) {
+        annotation = pdf.getObject(annotationReference);
+        if (!annotation.isDictionary()) {
+            throw std::runtime_error("The detached source annotation disappeared.");
+        }
+    } else {
+        auto annots = page.getKey("/Annots");
+        if (!annots.isArray() || slot < 0 || slot >= annots.getArrayNItems()) {
+            throw std::runtime_error("The source annotation slot changed.");
+        }
+        annotation = annots.getArrayItem(slot);
     }
-    auto annotation = annots.getArrayItem(slot);
-    if (annotation.getObjGen() != QPDFObjGen(object, generation)) {
+    if (annotation.getObjGen() != annotationReference) {
         throw std::runtime_error("The source annotation object identity changed.");
     }
     std::string subtype = utf8(requiredString(origin, @"subtype"));
@@ -490,7 +758,7 @@ void applyRecord(QPDFObjectHandle object, NSDictionary *record, bool created)
         replaceOptionalString(object, "/Contents", record, @"contents");
     }
     if (changes("RC")) {
-        object.removeKey("/RC");
+        replaceOptionalString(object, "/RC", record, @"richContents");
     }
     if (changes("M")) {
         id seconds = record[@"modificationDate"];
@@ -502,6 +770,14 @@ void applyRecord(QPDFObjectHandle object, NSDictionary *record, bool created)
     }
     if (changes("C")) {
         object.replaceKey("/C", numberArray(arrayValue(record, @"color")));
+    }
+    if (changes("AP")) {
+        // A highlight appearance stream paints its old color independently of
+        // /C. Once the user explicitly recolors the annotation, remove that
+        // stale cached appearance so Preview, PDFKit, and other readers
+        // synthesize a fresh appearance from standard annotation geometry and
+        // color semantics.
+        object.removeKey("/AP");
     }
     if (changes("F")) {
         object.replaceKey(
@@ -516,10 +792,7 @@ void applyRecord(QPDFObjectHandle object, NSDictionary *record, bool created)
         );
     }
     if (changes("NM")) {
-        object.replaceKey(
-            "/NM",
-            QPDFObjectHandle::newUnicodeString(utf8(requiredString(record, @"name")))
-        );
+        replaceOptionalString(object, "/NM", record, @"name");
     }
     if (changes("Name")) {
         id iconName = record[@"iconName"];
@@ -629,8 +902,7 @@ NSData *serializeGraph(NSData *sourceData, NSDictionary *request)
     auto const& pages = pdf.getAllPages();
     NSMutableDictionary<NSString *, NSDictionary *> *recordByID = [NSMutableDictionary dictionary];
     std::map<std::string, QPDFObjectHandle> objectByID;
-    std::map<int, std::vector<QPDFObjectHandle>> createdByPage;
-    std::set<QPDFObjGen> deletedReferences;
+    std::map<int, std::vector<QPDFObjectHandle>> liveByPage;
 
     for (id value in arrayValue(request, @"annotations")) {
         if (![value isKindOfClass:NSDictionary.class]) {
@@ -646,9 +918,10 @@ NSData *serializeGraph(NSData *sourceData, NSDictionary *request)
             auto object = resolveOrigin(pdf, pages, origin);
             objectByID.emplace(utf8(identifier), object);
             if (deleted) {
-                deletedReferences.insert(object.getObjGen());
             } else {
                 applyRecord(object, record, false);
+                int pageIndex = requiredNumber(record, @"pageIndex").intValue;
+                liveByPage[pageIndex].push_back(object);
             }
         } else if (!deleted) {
             int pageIndex = requiredNumber(record, @"pageIndex").intValue;
@@ -658,7 +931,7 @@ NSData *serializeGraph(NSData *sourceData, NSDictionary *request)
             auto object = pdf.makeIndirectObject(QPDFObjectHandle::newDictionary());
             applyRecord(object, record, true);
             objectByID.emplace(utf8(identifier), object);
-            createdByPage[pageIndex].push_back(object);
+            liveByPage[pageIndex].push_back(object);
         }
     }
 
@@ -709,18 +982,10 @@ NSData *serializeGraph(NSData *sourceData, NSDictionary *request)
     for (size_t pageIndex = 0; pageIndex < pages.size(); ++pageIndex) {
         auto page = pages.at(pageIndex);
         auto annots = page.getKey("/Annots");
-        std::vector<QPDFObjectHandle> retained;
-        if (annots.isArray()) {
-            for (auto item: annots.getArrayAsVector()) {
-                if (!deletedReferences.contains(item.getObjGen())) {
-                    retained.push_back(item);
-                }
-            }
-        }
-        auto additions = createdByPage.find(static_cast<int>(pageIndex));
-        if (additions != createdByPage.end()) {
-            retained.insert(retained.end(), additions->second.begin(), additions->second.end());
-        }
+        auto desired = liveByPage.find(static_cast<int>(pageIndex));
+        std::vector<QPDFObjectHandle> retained = desired == liveByPage.end()
+            ? std::vector<QPDFObjectHandle>()
+            : desired->second;
         if (!annots.isArray()) {
             if (!retained.empty()) {
                 page.replaceKey("/Annots", QPDFObjectHandle::newArray(retained));

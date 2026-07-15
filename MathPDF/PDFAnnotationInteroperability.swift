@@ -19,7 +19,6 @@ struct PDFPopupDiskState {
 }
 
 enum PDFAnnotationInteroperability {
-    private static let noViewFlag = 1 << 5
     private static let restrictedAnnotationFlags = (1 << 6) | (1 << 7) | (1 << 9)
 
     static func annotationAllowsEditing(_ annotation: PDFAnnotation) -> Bool {
@@ -51,8 +50,6 @@ enum PDFAnnotationInteroperability {
                     isOpen: popup.isOpen
                 )
             }
-            guard let state = states[identifier] else { continue }
-            setRawFlags(state.flags | noViewFlag, on: popup)
             popup.isOpen = false
         }
     }
@@ -66,61 +63,29 @@ enum PDFAnnotationInteroperability {
         popup.color = owner.color
         popup.contents = nil
         popup.isOpen = false
-        page.addAnnotation(popup)
-        owner.popup = popup
-        _ = popup.setValue(owner, forAnnotationKey: .parent)
+        // The page and owner are used only for placement and persistence
+        // bookkeeping. Do not attach either live PDFKit relationship here:
+        // PDFKit paints a native closed-note marker from `owner.popup` even
+        // when the Popup itself is absent from `page.annotations`.
         return popup
     }
 
-    static func attach(_ popup: PDFAnnotation, to owner: PDFAnnotation) {
-        let contents = owner.contents
-        owner.popup = nil
-        owner.contents = contents
-        owner.popup = popup
-        _ = popup.setValue(owner, forAnnotationKey: .parent)
-    }
-
-    static func detachPopup(from owner: PDFAnnotation) -> PDFAnnotation? {
-        guard let popup = owner.popup else { return nil }
-        let contents = owner.contents
-        owner.popup = nil
-        owner.contents = contents
-        popup.page?.removeAnnotation(popup)
-        return popup
-    }
-
-    static func updateColor(
-        of owner: PDFAnnotation,
-        to color: NSColor,
-        popupStates: inout [ObjectIdentifier: PDFPopupDiskState]
-    ) {
-        let popup = owner.popup
-        let contents = owner.contents
-        owner.popup = nil
-        owner.contents = contents
-        owner.color = color
-        owner.removeValue(forAnnotationKey: .appearanceDictionary)
-        if let popup {
-            popup.color = color
-            popup.removeValue(forAnnotationKey: .appearanceDictionary)
-            owner.popup = popup
-            _ = popup.setValue(owner, forAnnotationKey: .parent)
-            if case nil = popupStates[ObjectIdentifier(popup)] {
-                popupStates[ObjectIdentifier(popup)] = PDFPopupDiskState(
-                    flags: rawFlags(of: popup) & ~noViewFlag,
-                    isOpen: false
-                )
-            }
-        }
-    }
-
-    static func validate(serializedData: Data, against expectedDocument: PDFDocument) throws {
+    static func validate(
+        serializedData: Data,
+        against expectedDocument: PDFDocument,
+        logicalAnnotationsByPage: [[PDFAnnotation]]? = nil,
+        logicalPopupEdges: [(owner: PDFAnnotation, popup: PDFAnnotation)]? = nil
+    ) throws {
         guard let reloaded = PDFDocument(data: serializedData) else {
             throw PDFAnnotationInteroperabilityError.invalidSerializedDocument(
                 "the serialized PDF could not be reopened"
             )
         }
-        let expected = DocumentSemantics(document: expectedDocument)
+        let expected = DocumentSemantics(
+            document: expectedDocument,
+            logicalAnnotationsByPage: logicalAnnotationsByPage,
+            logicalPopupEdges: logicalPopupEdges
+        )
         let actual = DocumentSemantics(document: reloaded)
         guard expected.pageCount == actual.pageCount else {
             throw PDFAnnotationInteroperabilityError.invalidSerializedDocument("page count changed")
@@ -158,10 +123,6 @@ enum PDFAnnotationInteroperability {
         (annotation.value(forAnnotationKey: .flags) as? NSNumber)?.intValue ?? 0
     }
 
-    private static func setRawFlags(_ flags: Int, on annotation: PDFAnnotation) {
-        _ = annotation.setValue(NSNumber(value: flags), forAnnotationKey: .flags)
-    }
-
 }
 
 private struct DocumentSemantics {
@@ -169,10 +130,24 @@ private struct DocumentSemantics {
     let pages: [PageSemantics]
     let keywords: [String]
 
-    init(document: PDFDocument) {
+    init(
+        document: PDFDocument,
+        logicalAnnotationsByPage: [[PDFAnnotation]]? = nil,
+        logicalPopupEdges: [(owner: PDFAnnotation, popup: PDFAnnotation)]? = nil
+    ) {
         pageCount = document.pageCount
         pages = (0..<document.pageCount).compactMap { pageIndex in
-            document.page(at: pageIndex).map { PageSemantics(page: $0, index: pageIndex) }
+            document.page(at: pageIndex).map {
+                let logicalAnnotations = logicalAnnotationsByPage.flatMap { pages in
+                    pageIndex < pages.count ? pages[pageIndex] : nil
+                }
+                return PageSemantics(
+                    page: $0,
+                    index: pageIndex,
+                    annotations: logicalAnnotations ?? $0.annotations,
+                    popupEdges: logicalPopupEdges
+                )
+            }
         }
         let attributes = document.documentAttributes ?? [:]
         let key = PDFDocumentAttribute.keywordsAttribute.rawValue
@@ -212,18 +187,25 @@ private struct PageSemantics: Equatable {
     let reciprocalPopupEdges: [PopupEdgeSemantics]
     let orphanPopups: [String]
 
-    init(page: PDFPage, index: Int) {
+    init(
+        page: PDFPage,
+        index: Int,
+        annotations pageAnnotations: [PDFAnnotation],
+        popupEdges explicitPopupEdges: [(owner: PDFAnnotation, popup: PDFAnnotation)]? = nil
+    ) {
         rotation = page.rotation
         mediaBox = RectSemantics(page.bounds(for: .mediaBox))
         cropBox = RectSemantics(page.bounds(for: .cropBox))
         bleedBox = RectSemantics(page.bounds(for: .bleedBox))
         trimBox = RectSemantics(page.bounds(for: .trimBox))
         artBox = RectSemantics(page.bounds(for: .artBox))
-        annotations = page.annotations
-            .map { AnnotationSemantics(annotation: $0, pageIndex: index) }
-            .sorted { $0.description < $1.description }
+        // `/Annots` order controls overlapping annotation painting and hit
+        // testing. Treat it as document semantics instead of comparing a sorted
+        // multiset that can conceal first-save order drift.
+        annotations = pageAnnotations.map {
+            AnnotationSemantics(annotation: $0, pageIndex: index)
+        }
 
-        let pageAnnotations = page.annotations
         let pageAnnotationIDs = Set(pageAnnotations.map(ObjectIdentifier.init))
         let indexByID = Dictionary(uniqueKeysWithValues: pageAnnotations.enumerated().map {
             (ObjectIdentifier($0.element), $0.offset)
@@ -231,15 +213,31 @@ private struct PageSemantics: Equatable {
         var owners: [String] = []
         var edges: [PopupEdgeSemantics] = []
         var ownedPopupIDs: Set<ObjectIdentifier> = []
-        for (ownerIndex, owner) in pageAnnotations.enumerated() where
-            owner.type?.caseInsensitiveCompare("Popup") != .orderedSame
-        {
+        let popupPairs: [(owner: PDFAnnotation, popup: PDFAnnotation)]
+        if let explicitPopupEdges {
+            popupPairs = explicitPopupEdges.filter {
+                pageAnnotationIDs.contains(ObjectIdentifier($0.owner))
+                    && pageAnnotationIDs.contains(ObjectIdentifier($0.popup))
+            }
+        } else {
+            popupPairs = pageAnnotations.compactMap { owner in
+                guard
+                    owner.type?.caseInsensitiveCompare("Popup") != .orderedSame,
+                    let popup = owner.popup,
+                    pageAnnotationIDs.contains(ObjectIdentifier(popup)),
+                    let parent = popup.value(forAnnotationKey: .parent) as? PDFAnnotation,
+                    parent === owner
+                else { return nil }
+                return (owner: owner, popup: popup)
+            }
+        }
+
+        for pair in popupPairs {
+            let owner = pair.owner
+            let popup = pair.popup
             guard
-                let popup = owner.popup,
-                pageAnnotationIDs.contains(ObjectIdentifier(popup)),
-                let popupIndex = indexByID[ObjectIdentifier(popup)],
-                let parent = popup.value(forAnnotationKey: .parent) as? PDFAnnotation,
-                parent === owner
+                let ownerIndex = indexByID[ObjectIdentifier(owner)],
+                let popupIndex = indexByID[ObjectIdentifier(popup)]
             else { continue }
             owners.append(AnnotationSemantics(annotation: owner, pageIndex: index).description)
             edges.append(.init(
@@ -316,7 +314,6 @@ private struct AnnotationSemantics: Equatable, CustomStringConvertible {
     let modificationDateSecond: Int64
     let name: String
     let subject: String
-    let richContents: String
     let quadPoints: [PointSemantics]
 
     init(annotation: PDFAnnotation, pageIndex: Int) {
@@ -327,17 +324,15 @@ private struct AnnotationSemantics: Equatable, CustomStringConvertible {
             ? ""
             : annotation.contents ?? ""
         color = ColorSemantics(annotation.color)
-        let storedFlags = (annotation.value(forAnnotationKey: .flags) as? NSNumber)?.intValue ?? 0
-        flags = type.caseInsensitiveCompare("Popup") == .orderedSame
-            ? storedFlags & ~(1 << 5)
-            : storedFlags
+        flags = (annotation.value(forAnnotationKey: .flags) as? NSNumber)?.intValue ?? 0
         userName = annotation.userName ?? ""
-        modificationDateSecond = annotation.modificationDate.map {
-            Int64($0.timeIntervalSinceReferenceDate.rounded(.towardZero))
-        } ?? 0
+        modificationDateSecond = type.caseInsensitiveCompare("Popup") == .orderedSame
+            ? 0
+            : annotation.modificationDate.map {
+                Int64($0.timeIntervalSinceReferenceDate.rounded(.towardZero))
+            } ?? 0
         name = annotation.value(forAnnotationKey: .name) as? String ?? ""
         subject = annotation.value(forAnnotationKey: PDFAnnotationKey(rawValue: "/Subj")) as? String ?? ""
-        richContents = annotation.value(forAnnotationKey: PDFAnnotationKey(rawValue: "/RC")) as? String ?? ""
         quadPoints = (annotation.quadrilateralPoints ?? []).map {
             PointSemantics($0.pointValue)
         }
@@ -346,7 +341,7 @@ private struct AnnotationSemantics: Equatable, CustomStringConvertible {
     var description: String {
         [
             String(pageIndex), type, bounds.description, contents, color.description,
-            String(flags), userName, String(modificationDateSecond), name, subject, richContents,
+            String(flags), userName, String(modificationDateSecond), name, subject,
             quadPoints.map(\.description).joined(separator: ","),
         ].joined(separator: "|")
     }

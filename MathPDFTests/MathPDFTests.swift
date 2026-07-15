@@ -171,6 +171,40 @@ struct PDFNoteExtractorTests {
 @Suite("Document editing")
 struct MathPDFDocumentTests {
     @Test
+    func deletingDuringAnEditDoesNotLeakItsUndoBaselineAfterRestore() throws {
+        let document = MathPDFDocument()
+        let page = try #require(document.pdfDocument.page(at: 0))
+        let note = TestPDFFactory.annotation(
+            .text,
+            contents: "before",
+            bounds: .init(x: 70, y: 600, width: 24, height: 24)
+        )
+        page.addAnnotation(note)
+        let undoManager = UndoManager()
+        undoManager.groupsByEvent = false
+
+        #expect(document.updateContentsDuringEditing(of: note, to: "typed before delete"))
+        undoManager.beginUndoGrouping()
+        document.removeAnnotation(note, undoManager: undoManager)
+        undoManager.endUndoGrouping()
+        undoManager.undo()
+        #expect(note.page === page)
+        #expect(note.contents == "typed before delete")
+
+        #expect(document.updateContentsDuringEditing(of: note, to: "second edit"))
+        undoManager.beginUndoGrouping()
+        document.commitContentsEditingTransaction(
+            of: note,
+            from: "typed before delete",
+            undoManager: undoManager
+        )
+        undoManager.endUndoGrouping()
+        undoManager.undo()
+
+        #expect(note.contents == "typed before delete")
+    }
+
+    @Test
     func editingHighlightCreatesAStandardsPopupAndRemainsUndoable() throws {
         let document = MathPDFDocument()
         let page = try #require(document.pdfDocument.page(at: 0))
@@ -183,10 +217,11 @@ struct MathPDFDocumentTests {
         document.updateContents(of: highlight, to: "after", undoManager: undoManager)
         undoManager.endUndoGrouping()
         #expect(highlight.contents == "after")
-        let popup = try #require(highlight.popup)
-        #expect(page.annotations.contains { $0 === popup })
+        let popup = try #require(document.popupCompanion(for: highlight))
+        #expect(!page.annotations.contains { $0 === popup })
+        #expect(popup.page == nil)
         #expect(popup.contents == nil)
-        #expect((popup.value(forAnnotationKey: .parent) as? PDFAnnotation) === highlight)
+        #expect(highlight.popup == nil)
         #expect(page.annotations.filter { $0.type == "Text" }.isEmpty)
 
         undoManager.undo()
@@ -208,9 +243,92 @@ struct MathPDFDocumentTests {
         document.updateContents(of: highlight, to: "after", undoManager: nil)
         #expect(highlight.contents == "after")
         #expect(popup.contents == nil)
-        #expect(highlight.popup === popup)
-        #expect((popup.value(forAnnotationKey: .parent) as? PDFAnnotation) === highlight)
+        #expect(document.popupCompanion(for: highlight) === popup)
+        #expect(highlight.popup == nil)
+        #expect(!page.annotations.contains { $0 === popup })
         #expect(page.annotations.filter { $0.type == "Text" }.isEmpty)
+    }
+
+    @Test
+    func activeEditingUpdatesSnapshotsImmediatelyAndCommitsOneDocumentUndo() throws {
+        let document = MathPDFDocument()
+        let page = try #require(document.pdfDocument.page(at: 0))
+        let highlight = TestPDFFactory.annotation(
+            .highlight,
+            contents: "before",
+            bounds: .init(x: 70, y: 600, width: 120, height: 18)
+        )
+        page.addAnnotation(highlight)
+        let initialRevision = document.annotationRevision
+
+        #expect(document.updateContentsDuringEditing(of: highlight, to: "during"))
+        #expect(highlight.contents == "during")
+        #expect(document.annotationRevision == initialRevision)
+        let autosaveReload = try MathPDFDocument(data: document.serializedData())
+        #expect(PDFNoteExtractor.extractNotes(from: autosaveReload.pdfDocument).first?.contents == "during")
+
+        let undoManager = UndoManager()
+        undoManager.groupsByEvent = false
+        undoManager.beginUndoGrouping()
+        document.commitContentsEditingTransaction(
+            of: highlight,
+            from: "before",
+            undoManager: undoManager
+        )
+        undoManager.endUndoGrouping()
+
+        #expect(document.annotationRevision == initialRevision + 1)
+        #expect(undoManager.canUndo)
+        undoManager.undo()
+        #expect(highlight.contents == "before")
+        undoManager.redo()
+        #expect(highlight.contents == "during")
+    }
+
+    @Test
+    func activeImportedEditUndoRestoresRawOwnerMetadataAndLeavesPopupPrivateStateNeutral() throws {
+        let source = TestPDFFactory.rawPopupGraph(
+            shape: .reciprocal,
+            includeNames: false,
+            includePopupSentinels: true,
+            includeOwnerSentinels: true
+        )
+        let originalOwner = try TestPDFFactory.rawFirstOwnerState(in: source)
+        let originalPopup = try TestPDFFactory.rawPopupState(in: source)
+        #expect(originalOwner.modificationDate == "D:20260713010101Z")
+        #expect(originalOwner.richContents == "owner-rich")
+
+        let document = try MathPDFDocument(data: source)
+        let page = try #require(document.pdfDocument.page(at: 0))
+        let highlight = try #require(page.annotations.first { $0.type == "Highlight" })
+
+        #expect(document.updateContentsDuringEditing(of: highlight, to: "edited during typing"))
+        let edited = try document.serializedData()
+        let editedOwner = try TestPDFFactory.rawFirstOwnerState(in: edited)
+        #expect(editedOwner.contents == "edited during typing")
+        #expect(editedOwner.modificationDate != originalOwner.modificationDate)
+        #expect(editedOwner.richContents == nil)
+        #expect(try TestPDFFactory.rawPopupState(in: edited) == originalPopup)
+
+        let undoManager = UndoManager()
+        undoManager.groupsByEvent = false
+        undoManager.beginUndoGrouping()
+        document.commitContentsEditingTransaction(
+            of: highlight,
+            from: "owner note",
+            undoManager: undoManager
+        )
+        undoManager.endUndoGrouping()
+
+        undoManager.undo()
+        let undone = try document.serializedData()
+        #expect(try TestPDFFactory.rawFirstOwnerState(in: undone) == originalOwner)
+        #expect(try TestPDFFactory.rawPopupState(in: undone) == originalPopup)
+
+        undoManager.redo()
+        let redone = try document.serializedData()
+        #expect(try TestPDFFactory.rawFirstOwnerState(in: redone) == editedOwner)
+        #expect(try TestPDFFactory.rawPopupState(in: redone) == originalPopup)
     }
 
     @Test
@@ -237,9 +355,9 @@ struct MathPDFDocumentTests {
         #expect(reloaded.preamble == #"\newcommand{\Q}{\mathbb{Q}}"#)
         let reloadedPage = try #require(reloaded.pdfDocument.page(at: 0))
         let reloadedText = try #require(reloadedPage.annotations.first { $0.type == "Text" })
-        let reloadedPopup = try #require(reloadedText.popup)
-        #expect(reloadedPage.annotations.contains { $0 === reloadedPopup })
-        #expect((reloadedPopup.value(forAnnotationKey: .parent) as? PDFAnnotation) === reloadedText)
+        let reloadedPopup = try #require(reloaded.popupCompanion(for: reloadedText))
+        #expect(!reloadedPage.annotations.contains { $0 === reloadedPopup })
+        #expect(reloadedText.popup == nil)
     }
 
     @Test
@@ -277,6 +395,41 @@ struct MathPDFDocumentTests {
         #expect(page.annotations.filter { $0.type == "Highlight" }.count == 1)
         #expect((highlight.quadrilateralPoints?.count ?? 0) >= 8)
         #expect(PDFNoteExtractor.extractNotes(from: document.pdfDocument).count == 1)
+    }
+
+    @Test
+    func multiPageHighlightCreationUndoAndRedoAsOneAction() throws {
+        let source = TestPDFFactory.textDocument(pages: ["first page", "second page"])
+        let document = try MathPDFDocument(data: try #require(source.dataRepresentation()))
+        let firstPage = try #require(document.pdfDocument.page(at: 0))
+        let secondPage = try #require(document.pdfDocument.page(at: 1))
+        let firstSelection = try #require(firstPage.selection(for: NSRange(location: 0, length: 5)))
+        let secondSelection = try #require(secondPage.selection(for: NSRange(location: 0, length: 6)))
+        let combinedSelection = PDFSelection(document: document.pdfDocument)
+        combinedSelection.add(firstSelection)
+        combinedSelection.add(secondSelection)
+        let undoManager = UndoManager()
+        undoManager.groupsByEvent = false
+
+        undoManager.beginUndoGrouping()
+        _ = try #require(document.addHighlight(from: combinedSelection, undoManager: undoManager))
+        undoManager.endUndoGrouping()
+        #expect(firstPage.annotations.filter { $0.type == "Highlight" }.count == 1)
+        #expect(secondPage.annotations.filter { $0.type == "Highlight" }.count == 1)
+
+        undoManager.undo()
+        #expect(firstPage.annotations.allSatisfy { $0.type != "Highlight" })
+        #expect(secondPage.annotations.allSatisfy { $0.type != "Highlight" })
+        #expect(undoManager.canRedo)
+
+        undoManager.redo()
+        #expect(firstPage.annotations.filter { $0.type == "Highlight" }.count == 1)
+        #expect(secondPage.annotations.filter { $0.type == "Highlight" }.count == 1)
+        #expect(undoManager.canUndo)
+
+        let reloaded = try MathPDFDocument(data: document.serializedData())
+        #expect(reloaded.pdfDocument.page(at: 0)?.annotations.filter { $0.type == "Highlight" }.count == 1)
+        #expect(reloaded.pdfDocument.page(at: 1)?.annotations.filter { $0.type == "Highlight" }.count == 1)
     }
 
     @Test
@@ -349,9 +502,9 @@ struct MathPDFDocumentTests {
         let savedHighlight = try #require(savedFirstPage.annotations.first { $0.type == "Highlight" })
         #expect(savedHighlight.contents == "after")
         #expect(savedHighlight.userName == "Emmy Noether")
-        let savedPopup = try #require(savedHighlight.popup)
-        #expect(savedFirstPage.annotations.contains { $0 === savedPopup })
-        #expect((savedPopup.value(forAnnotationKey: .parent) as? PDFAnnotation) === savedHighlight)
+        let savedPopup = try #require(reloaded.popupCompanion(for: savedHighlight))
+        #expect(!savedFirstPage.annotations.contains { $0 === savedPopup })
+        #expect(savedHighlight.popup == nil)
         #expect(savedFirstPage.annotations.filter { $0.type == "Text" }.isEmpty)
         #expect(savedFirstPage.rotation == 90)
         #expect(savedSecondPage.bounds(for: .cropBox) == CGRect(x: 18, y: 24, width: 540, height: 720))
@@ -378,16 +531,17 @@ struct MathPDFDocumentTests {
         #expect(sourcePopup.contents == nil)
 
         let data = try document.serializedData()
-        #expect(sourceHighlight.popup === sourcePopup)
-        #expect(page.annotations.contains { $0 === sourcePopup })
+        #expect(document.popupCompanion(for: sourceHighlight) === sourcePopup)
+        #expect(sourceHighlight.popup == nil)
+        #expect(!page.annotations.contains { $0 === sourcePopup })
 
         let reloaded = try MathPDFDocument(data: data)
         let savedPage = try #require(reloaded.pdfDocument.page(at: 0))
         let savedHighlight = try #require(savedPage.annotations.first { $0.type == "Highlight" })
         #expect(savedHighlight.contents == "after")
-        let savedPopup = try #require(savedHighlight.popup)
-        #expect(savedPage.annotations.contains { $0 === savedPopup })
-        #expect((savedPopup.value(forAnnotationKey: .parent) as? PDFAnnotation) === savedHighlight)
+        let savedPopup = try #require(reloaded.popupCompanion(for: savedHighlight))
+        #expect(!savedPage.annotations.contains { $0 === savedPopup })
+        #expect(savedHighlight.popup == nil)
     }
 
     @Test
@@ -416,8 +570,8 @@ struct MathPDFDocumentTests {
         let reloaded = try MathPDFDocument(data: first)
         let savedPage = try #require(reloaded.pdfDocument.page(at: 0))
         let savedHighlight = try #require(savedPage.annotations.first { $0.type == "Highlight" })
-        let savedPopup = try #require(savedHighlight.popup)
-        #expect((savedPopup.value(forAnnotationKey: .parent) as? PDFAnnotation) === savedHighlight)
+        _ = try #require(reloaded.popupCompanion(for: savedHighlight))
+        #expect(savedHighlight.popup == nil)
     }
 
     @Test
@@ -518,6 +672,315 @@ struct MathPDFDocumentTests {
     }
 
     @Test
+    func recoloringAnImportedHighlightDropsItsStaleAppearanceStream() throws {
+        let source = TestPDFFactory.rawHighlightWithAppearance()
+        #expect(try TestPDFFactory.rawFirstHighlightHasAppearance(in: source))
+        let document = try MathPDFDocument(data: source)
+        let page = try #require(document.pdfDocument.page(at: 0))
+        let highlight = try #require(page.annotations.first { $0.type == "Highlight" })
+
+        let undoManager = UndoManager()
+        undoManager.groupsByEvent = false
+        undoManager.beginUndoGrouping()
+        #expect(document.canChangeColor(of: highlight))
+        #expect(document.updateHighlightColor(of: highlight, to: .systemGreen, undoManager: undoManager))
+        undoManager.endUndoGrouping()
+
+        let saved = try document.serializedData()
+        #expect(!(try TestPDFFactory.rawFirstHighlightHasAppearance(in: saved)))
+        try assertHighlightGraph(in: saved, expected: ["appearance-owner": "owner note"])
+        let reloaded = try MathPDFDocument(data: saved)
+        let reloadedPage = try #require(reloaded.pdfDocument.page(at: 0))
+        let reloadedHighlight = try #require(
+            reloadedPage.annotations.first { $0.type == "Highlight" }
+        )
+        #expect(AnnotationColorChoice.nearest(to: reloadedHighlight.color) == .green)
+
+        undoManager.undo()
+        let undone = try document.serializedData()
+        #expect(try TestPDFFactory.rawFirstHighlightHasAppearance(in: undone))
+        let undoReload = try MathPDFDocument(data: undone)
+        let undoPage = try #require(undoReload.pdfDocument.page(at: 0))
+        let undoHighlight = try #require(undoPage.annotations.first { $0.type == "Highlight" })
+        #expect(AnnotationColorChoice.nearest(to: undoHighlight.color) == .yellow)
+        try assertHighlightGraph(in: undone, expected: ["appearance-owner": "owner note"])
+    }
+
+    @Test
+    func editingPreservesAnImportedPopupColorThroughTheRawWriter() throws {
+        let document = try MathPDFDocument(data: TestPDFFactory.rawPopupGraphWithMismatchedColor())
+        let page = try #require(document.pdfDocument.page(at: 0))
+        let highlight = try #require(page.annotations.first { $0.type == "Highlight" })
+
+        #expect(document.updateContents(of: highlight, to: "edited owner note", undoManager: nil))
+        let saved = try document.serializedData()
+        let savedPopupColor = try TestPDFFactory.rawFirstPopupColor(in: saved)
+        #expect(savedPopupColor == [1, 0, 0])
+        try assertHighlightGraph(in: saved, expected: ["raw-owner": "edited owner note"])
+    }
+
+    @Test
+    func colorUndoRestoresThePopupsIndependentColorAndAppearance() throws {
+        let source = TestPDFFactory.rawPopupGraphWithMismatchedColor()
+        let originalPopup = try TestPDFFactory.rawPopupState(in: source)
+        #expect(originalPopup.color == [1, 0, 0])
+        #expect(originalPopup.hasAppearance)
+
+        let document = try MathPDFDocument(data: source)
+        let page = try #require(document.pdfDocument.page(at: 0))
+        let highlight = try #require(page.annotations.first { $0.type == "Highlight" })
+        let undoManager = UndoManager()
+        undoManager.groupsByEvent = false
+        undoManager.beginUndoGrouping()
+        #expect(document.updateHighlightColor(
+            of: highlight,
+            to: NSColor.systemGreen,
+            undoManager: undoManager
+        ))
+        undoManager.endUndoGrouping()
+        undoManager.undo()
+
+        let undone = try document.serializedData()
+        let restoredPopup = try TestPDFFactory.rawPopupState(in: undone)
+        #expect(restoredPopup.contents == originalPopup.contents)
+        #expect(restoredPopup.modificationDate == originalPopup.modificationDate)
+        #expect(restoredPopup.flags == originalPopup.flags)
+        #expect(restoredPopup.isOpen == originalPopup.isOpen)
+        #expect(restoredPopup.hasAppearance == originalPopup.hasAppearance)
+        #expect(restoredPopup.sentinel == originalPopup.sentinel)
+        #expect(restoredPopup.name == originalPopup.name)
+        #expect(restoredPopup.richContents == originalPopup.richContents)
+        #expect(restoredPopup.color == originalPopup.color)
+    }
+
+    @Test
+    func editingOwnerPreservesImportedPopupPrivateMetadata() throws {
+        let source = TestPDFFactory.rawPopupGraph(
+            shape: .reciprocal,
+            includeNames: false,
+            includePopupSentinels: true,
+            includeOwnerSentinels: true
+        )
+        let originalPopup = try TestPDFFactory.rawPopupState(in: source)
+        let document = try MathPDFDocument(data: source)
+        let page = try #require(document.pdfDocument.page(at: 0))
+        let highlight = try #require(page.annotations.first { $0.type == "Highlight" })
+
+        #expect(document.updateContents(of: highlight, to: "edited owner note", undoManager: nil))
+        let saved = try document.serializedData()
+
+        #expect(try TestPDFFactory.rawPopupState(in: saved) == originalPopup)
+        let savedOwner = try TestPDFFactory.rawFirstOwnerState(in: saved)
+        #expect(savedOwner.contents == "edited owner note")
+        #expect(savedOwner.richContents == nil)
+    }
+
+    @Test
+    func editSaveUndoSaveRestoresOwnerStateAndKeepsPopupPrivateStateNeutral() throws {
+        let source = TestPDFFactory.rawPopupGraph(
+            shape: .reciprocal,
+            includeNames: false,
+            includePopupSentinels: true,
+            includeOwnerSentinels: true
+        )
+        let originalOwner = try TestPDFFactory.rawFirstOwnerState(in: source)
+        let originalPopup = try TestPDFFactory.rawPopupState(in: source)
+        let document = try MathPDFDocument(data: source)
+        let page = try #require(document.pdfDocument.page(at: 0))
+        let highlight = try #require(page.annotations.first { $0.type == "Highlight" })
+        let undoManager = UndoManager()
+        undoManager.groupsByEvent = false
+
+        undoManager.beginUndoGrouping()
+        #expect(document.updateContents(of: highlight, to: "edited owner note", undoManager: undoManager))
+        undoManager.endUndoGrouping()
+        let edited = try document.serializedData()
+        let editedOwner = try TestPDFFactory.rawFirstOwnerState(in: edited)
+        #expect(editedOwner.contents == "edited owner note")
+        #expect(editedOwner.richContents == nil)
+        #expect(editedOwner.name != nil)
+        #expect(try TestPDFFactory.rawPopupState(in: edited) == originalPopup)
+
+        undoManager.undo()
+        let undone = try document.serializedData()
+        #expect(try TestPDFFactory.rawFirstOwnerState(in: undone) == originalOwner)
+        #expect(try TestPDFFactory.rawPopupState(in: undone) == originalPopup)
+        try assertSingleReciprocalAnnotation(
+            in: undone,
+            ownerSubtype: "Highlight",
+            contents: "owner note"
+        )
+
+        undoManager.redo()
+        let redone = try document.serializedData()
+        #expect(try TestPDFFactory.rawFirstOwnerState(in: redone) == editedOwner)
+        #expect(try TestPDFFactory.rawPopupState(in: redone) == originalPopup)
+    }
+
+    @Test
+    func editUndoRestoresAnImportedOwnerWithoutAPopup() throws {
+        let source = TestPDFFactory.rawOwnerWithoutPopup()
+        let originalOwner = try TestPDFFactory.rawFirstOwnerState(in: source)
+        let document = try MathPDFDocument(data: source)
+        let page = try #require(document.pdfDocument.page(at: 0))
+        let highlight = try #require(page.annotations.first { $0.type == "Highlight" })
+        let undoManager = UndoManager()
+        undoManager.groupsByEvent = false
+
+        undoManager.beginUndoGrouping()
+        #expect(document.updateContents(of: highlight, to: "edited owner note", undoManager: undoManager))
+        undoManager.endUndoGrouping()
+        let edited = try document.serializedData()
+        try assertSingleReciprocalAnnotation(
+            in: edited,
+            ownerSubtype: "Highlight",
+            contents: "edited owner note"
+        )
+
+        undoManager.undo()
+        let undone = try document.serializedData()
+        #expect(try TestPDFFactory.rawFirstOwnerState(in: undone) == originalOwner)
+        #expect(try TestPDFFactory.rawAnnotationSubtypes(in: undone) == ["Highlight"])
+
+        undoManager.redo()
+        try assertSingleReciprocalAnnotation(
+            in: document.serializedData(),
+            ownerSubtype: "Highlight",
+            contents: "edited owner note"
+        )
+    }
+
+    @Test
+    func newlyCreatedAnnotationsPreserveLiveAnnotsOrder() throws {
+        let document = MathPDFDocument()
+        let page = try #require(document.pdfDocument.page(at: 0))
+        var annotations: [PDFAnnotation] = []
+        for index in 0..<4 {
+            let annotation = TestPDFFactory.annotation(
+                .square,
+                contents: "square-\(index)",
+                bounds: CGRect(x: 80 + index, y: 500, width: 40, height: 40)
+            )
+            page.addAnnotation(annotation)
+            #expect(document.updateContents(
+                of: annotation,
+                to: "registered-square-\(index)",
+                undoManager: nil
+            ))
+            annotations.append(annotation)
+        }
+
+        let nameKey = PDFAnnotationKey(rawValue: "/NM")
+        let reverseNameOrder = Array(annotations.reversed())
+        for annotation in annotations {
+            page.removeAnnotation(annotation)
+        }
+        for annotation in reverseNameOrder {
+            page.addAnnotation(annotation)
+        }
+        let expectedNames = reverseNameOrder.compactMap {
+            $0.value(forAnnotationKey: nameKey) as? String
+        }
+
+        #expect(try TestPDFFactory.rawAnnotationNames(in: document.serializedData()) == expectedNames)
+    }
+
+    @Test
+    func visibleReorderPreservesInterleavedHiddenPopupSlot() throws {
+        let document = try MathPDFDocument(
+            data: TestPDFFactory.rawPopupGraph(shape: .reciprocal)
+        )
+        let page = try #require(document.pdfDocument.page(at: 0))
+        let owner = try #require(page.annotations.first { $0.type == "Highlight" })
+        var squares: [PDFAnnotation] = []
+        for index in 0..<2 {
+            let square = TestPDFFactory.annotation(
+                .square,
+                contents: "square-\(index)",
+                bounds: CGRect(x: 80 + index * 50, y: 500, width: 40, height: 40)
+            )
+            page.addAnnotation(square)
+            #expect(document.updateContents(
+                of: square,
+                to: "registered-square-\(index)",
+                undoManager: nil
+            ))
+            squares.append(square)
+        }
+
+        for annotation in [owner] + squares {
+            page.removeAnnotation(annotation)
+        }
+        for annotation in [squares[1], owner, squares[0]] {
+            page.addAnnotation(annotation)
+        }
+        // Re-adding a PDFKit owner may also reinsert its attached Popup into
+        // the page graph. Route one ordinary product mutation through the
+        // document so the test's runtime graph matches MathPDF's invariant
+        // before it asserts how the hidden slot is serialized.
+        #expect(document.updateContents(
+            of: owner,
+            to: "owner note after visible reorder",
+            undoManager: nil
+        ))
+        // The direct remove/re-add above is intentionally outside MathPDF's
+        // mutation API. Normalize the synthetic presentation graph exactly as
+        // the document does on load before exercising order reconciliation.
+        for popup in page.annotations where popup.type == "Popup" {
+            page.removeAnnotation(popup)
+        }
+        #expect(page.annotations.allSatisfy { $0.type != "Popup" })
+
+        let nameKey = PDFAnnotationKey(rawValue: "/NM")
+        let firstSquareName = try #require(
+            squares[0].value(forAnnotationKey: nameKey) as? String
+        )
+        let secondSquareName = try #require(
+            squares[1].value(forAnnotationKey: nameKey) as? String
+        )
+        #expect(
+            try TestPDFFactory.rawAnnotationNames(in: document.serializedData())
+                == [secondSquareName, "raw-popup", "raw-owner", firstSquareName]
+        )
+
+        document.removeAnnotation(squares[1], undoManager: nil)
+        for annotation in [owner, squares[0]] {
+            page.removeAnnotation(annotation)
+        }
+        for annotation in [squares[0], owner] {
+            page.addAnnotation(annotation)
+        }
+        #expect(
+            try TestPDFFactory.rawAnnotationNames(in: document.serializedData())
+                == ["raw-popup", firstSquareName, "raw-owner"]
+        )
+    }
+
+    @Test
+    func lockedOwnerOrPopupRefusesMutationAndSurvivesAnUnrelatedSave() throws {
+        for lockedPart in [LockedAnnotationPart.owner, .popup] {
+            let source = TestPDFFactory.rawLockedPopupGraph(lockedPart)
+            let originalOwner = try TestPDFFactory.rawFirstOwnerState(in: source)
+            let originalPopup = try TestPDFFactory.rawPopupState(in: source)
+            let document = try MathPDFDocument(data: source)
+            let page = try #require(document.pdfDocument.page(at: 0))
+            let highlight = try #require(page.annotations.first { $0.type == "Highlight" })
+
+            #expect(!document.canEdit(highlight))
+            #expect(!document.canChangeColor(of: highlight))
+            #expect(!document.updateContents(of: highlight, to: "must not change", undoManager: nil))
+            #expect(!document.updateHighlightColor(of: highlight, to: .systemGreen, undoManager: nil))
+            document.removeAnnotation(highlight, undoManager: nil)
+            #expect(page.annotations.contains { $0 === highlight })
+
+            document.preamble = #"\newcommand{\Q}{\mathbb{Q}}"#
+            let saved = try document.serializedData()
+            #expect(try TestPDFFactory.rawFirstOwnerState(in: saved) == originalOwner)
+            #expect(try TestPDFFactory.rawPopupState(in: saved) == originalPopup)
+        }
+    }
+
+    @Test
     func oneSidedImportedPopupGraphsRepairWithoutChangingOwnerContents() throws {
         for shape in [PopupGraphShape.ownerOnly, .parentOnly] {
             let source = TestPDFFactory.rawPopupGraph(shape: shape)
@@ -534,9 +997,105 @@ struct MathPDFDocumentTests {
             let savedHighlight = try #require(
                 savedPage.annotations.first { $0.type == "Highlight" }
             )
-            let savedPopup = try #require(savedHighlight.popup)
+            _ = try #require(reloaded.popupCompanion(for: savedHighlight))
             #expect(savedHighlight.contents == "owner note")
-            #expect((savedPopup.value(forAnnotationKey: .parent) as? PDFAnnotation) === savedHighlight)
+            #expect(savedHighlight.popup == nil)
+        }
+    }
+
+    @Test
+    func exactLegacyOrphanRepairIsRuntimeOnlyUntilADirtySave() throws {
+        let source = TestPDFFactory.rawLegacyOrphanGraph()
+        let document = try MathPDFDocument(data: source)
+        #expect(document.editingError == nil)
+
+        let page = try #require(document.pdfDocument.page(at: 0))
+        let highlight = try #require(page.annotations.first { $0.type == "Highlight" })
+        _ = try #require(document.popupCompanion(for: highlight))
+        #expect(highlight.contents == "legacy owner note")
+        #expect(page.annotations.allSatisfy { $0.type != "Popup" })
+        #expect(highlight.popup == nil)
+
+        // Load-time inferred edges are deliberately pending persistence work,
+        // not a user-visible document mutation. The cached no-op snapshot must
+        // therefore remain the exact source revision.
+        #expect(try document.serializedData() == source)
+        #expect(try document.serializedData() == source)
+
+        document.preamble = #"\newcommand{\Q}{\mathbb{Q}}"#
+        let saved = try document.serializedData()
+        #expect(saved != source)
+        try assertSingleReciprocalAnnotation(
+            in: saved,
+            ownerSubtype: "Highlight",
+            contents: "legacy owner note"
+        )
+        let reloaded = try MathPDFDocument(data: saved)
+        let savedPage = try #require(reloaded.pdfDocument.page(at: 0))
+        #expect(savedPage.annotations.filter { $0.type == "Text" }.isEmpty)
+    }
+
+    @Test
+    func ambiguousLegacyOrphanRemainsReadOnly() throws {
+        let source = TestPDFFactory.rawLegacyOrphanGraph(ambiguous: true)
+        let document = try MathPDFDocument(data: source)
+        #expect(document.editingError?.localizedDescription.contains("orphan Popup") == true)
+
+        // Read-only inspection still has a byte-identical no-op path.
+        #expect(try document.serializedData() == source)
+        document.preamble = #"\newcommand{\Q}{\mathbb{Q}}"#
+        do {
+            _ = try document.serializedData()
+            Issue.record("An ambiguous orphan Popup was serialized instead of rejected.")
+        } catch {
+            #expect(error.localizedDescription.contains("orphan Popup"))
+        }
+    }
+
+    @Test
+    func exactOffAnnotsPopupCloneRepairsOnDirtySaveWithoutDuplication() throws {
+        let source = TestPDFFactory.rawOffAnnotsPopupCloneGraph()
+        let document = try MathPDFDocument(data: source)
+        #expect(document.editingError == nil)
+
+        let page = try #require(document.pdfDocument.page(at: 0))
+        let owner = try #require(page.annotations.first { $0.type == "Text" })
+        _ = try #require(document.popupCompanion(for: owner))
+        #expect(page.annotations.filter { $0.type == "Text" }.count == 1)
+        #expect(page.annotations.filter { $0.type == "Popup" }.isEmpty)
+        #expect(owner.popup == nil)
+
+        #expect(try document.serializedData() == source)
+        document.preamble = #"\newcommand{\Q}{\mathbb{Q}}"#
+        let saved = try document.serializedData()
+        try assertSingleReciprocalAnnotation(
+            in: saved,
+            ownerSubtype: "Text",
+            contents: "off-array owner note"
+        )
+        let popupState = try TestPDFFactory.rawPopupState(in: saved)
+        #expect(popupState.contents == "popup-private")
+        #expect(popupState.modificationDate == "D:20260714010101Z")
+        #expect(popupState.flags == 4)
+        #expect(popupState.isOpen)
+        #expect(popupState.hasAppearance)
+        #expect(popupState.sentinel == "keep-me")
+        #expect(popupState.name != nil)
+    }
+
+    @Test
+    func nearCloneOffAnnotsPopupRemainsReadOnly() throws {
+        let document = try MathPDFDocument(
+            data: TestPDFFactory.rawOffAnnotsPopupCloneGraph(cloneMatches: false)
+        )
+        #expect(document.editingError?.localizedDescription.contains("unsupported off-page") == true)
+        document.preamble = #"\newcommand{\Q}{\mathbb{Q}}"#
+
+        do {
+            _ = try document.serializedData()
+            Issue.record("A near-clone off-/Annots Popup was serialized instead of rejected.")
+        } catch {
+            #expect(error.localizedDescription.contains("unsupported off-page"))
         }
     }
 
@@ -575,6 +1134,26 @@ struct MathPDFDocumentTests {
             Issue.record("A duplicate /NM graph was serialized instead of rejected.")
         } catch {
             #expect(error.localizedDescription.contains("not unique"))
+        }
+    }
+
+    @Test
+    func durableAnnotationNamesMayRepeatOnDifferentPages() throws {
+        let source = TestPDFFactory.rawCrossPageDuplicateNames()
+        let document = try MathPDFDocument(data: source)
+        #expect(document.editingError == nil)
+        #expect(try document.serializedData() == source)
+
+        document.preamble = #"\newcommand{\Q}{\mathbb{Q}}"#
+        let saved = try document.serializedData()
+        let reloaded = try MathPDFDocument(data: saved)
+        #expect(reloaded.editingError == nil)
+        #expect(reloaded.pdfDocument.pageCount == 2)
+        let nameKey = PDFAnnotationKey(rawValue: "/NM")
+        for pageIndex in 0..<2 {
+            let page = try #require(reloaded.pdfDocument.page(at: pageIndex))
+            let annotation = try #require(page.annotations.first { $0.type == "Highlight" })
+            #expect(annotation.value(forAnnotationKey: nameKey) as? String == "reused-across-pages")
         }
     }
 
@@ -636,6 +1215,59 @@ struct MathPDFDocumentTests {
     }
 
     @Test
+    func directlyRemovedTrackedAnnotationFailsClosed() throws {
+        let document = MathPDFDocument()
+        let page = try #require(document.pdfDocument.page(at: 0))
+        let annotation = TestPDFFactory.annotation(
+            .square,
+            contents: "tracked",
+            bounds: CGRect(x: 80, y: 80, width: 40, height: 40)
+        )
+        page.addAnnotation(annotation)
+        #expect(document.updateContents(of: annotation, to: "registered", undoManager: nil))
+        page.removeAnnotation(annotation)
+
+        do {
+            _ = try document.serializedData()
+            Issue.record("A directly removed tracked annotation was silently resurrected.")
+        } catch let error as PDFPersistenceError {
+            guard case let .mappingFailed(reason) = error else {
+                Issue.record("Unexpected persistence error: \(error)")
+                return
+            }
+            #expect(reason.contains("visible annotation set changed"))
+        }
+    }
+
+    @Test
+    func directlyMovedTrackedAnnotationFailsClosed() throws {
+        let source = try #require(TestPDFFactory.document(pageCount: 2).dataRepresentation())
+        let document = try MathPDFDocument(data: source)
+        let firstPage = try #require(document.pdfDocument.page(at: 0))
+        let secondPage = try #require(document.pdfDocument.page(at: 1))
+        let annotation = TestPDFFactory.annotation(
+            .square,
+            contents: "tracked",
+            bounds: CGRect(x: 80, y: 80, width: 40, height: 40)
+        )
+        firstPage.addAnnotation(annotation)
+        #expect(document.updateContents(of: annotation, to: "registered", undoManager: nil))
+        firstPage.removeAnnotation(annotation)
+        secondPage.addAnnotation(annotation)
+
+        do {
+            _ = try document.serializedData()
+            Issue.record("A directly moved tracked annotation was serialized on two pages.")
+        } catch let error as PDFPersistenceError {
+            guard case let .mappingFailed(reason) = error else {
+                Issue.record("Unexpected persistence error: \(error)")
+                return
+            }
+            #expect(reason.contains("moved from page 1 to page 2"))
+        }
+    }
+
+    @Test
     func importsPreambleFromExternallyAuthoredStringKeyedMetadata() throws {
         let base = MathPDFDocument()
         let source = #"\newcommand{\Q}{\mathbb{Q}}"#
@@ -668,8 +1300,8 @@ struct MathPDFDocumentTests {
         in data: Data,
         expected: [String: String]
     ) throws {
-        let reloaded = try MathPDFDocument(data: data)
-        let page = try #require(reloaded.pdfDocument.page(at: 0))
+        let reloaded = try #require(PDFDocument(data: data))
+        let page = try #require(reloaded.page(at: 0))
         let highlights = page.annotations.filter { $0.type == "Highlight" }
         let popups = page.annotations.filter { $0.type == "Popup" }
         #expect(highlights.count == expected.count)
@@ -685,13 +1317,31 @@ struct MathPDFDocumentTests {
         }
     }
 
+    private func assertSingleReciprocalAnnotation(
+        in data: Data,
+        ownerSubtype: String,
+        contents: String
+    ) throws {
+        let reloaded = try #require(PDFDocument(data: data))
+        let page = try #require(reloaded.page(at: 0))
+        let owners = page.annotations.filter { $0.type == ownerSubtype }
+        let popups = page.annotations.filter { $0.type == "Popup" }
+        #expect(owners.count == 1)
+        #expect(popups.count == 1)
+        let owner = try #require(owners.first)
+        let popup = try #require(popups.first)
+        #expect(owner.contents == contents)
+        #expect(owner.popup === popup)
+        #expect((popup.value(forAnnotationKey: .parent) as? PDFAnnotation) === owner)
+    }
+
     private func assertSingleTextNote(
         in data: Data,
         contents: String,
         preamble: String
     ) throws {
-        let reloaded = try MathPDFDocument(data: data)
-        let page = try #require(reloaded.pdfDocument.page(at: 0))
+        let reloaded = try #require(PDFDocument(data: data))
+        let page = try #require(reloaded.page(at: 0))
         let notes = page.annotations.filter { $0.type == "Text" }
         #expect(notes.count == 1)
         let note = try #require(notes.first)
@@ -699,13 +1349,39 @@ struct MathPDFDocumentTests {
         let popup = try #require(note.popup)
         #expect(page.annotations.filter { $0.type == "Popup" }.count == 1)
         #expect((popup.value(forAnnotationKey: .parent) as? PDFAnnotation) === note)
-        #expect(reloaded.preamble == preamble)
+        let mathDocument = try MathPDFDocument(data: data)
+        #expect(mathDocument.preamble == preamble)
     }
 }
 
 @MainActor
 @Suite("Reader state")
 struct ReaderDocumentControllerTests {
+    @Test
+    func highlightWithNoteRejectsAMultiPageSelectionBeforeMutation() throws {
+        let source = TestPDFFactory.textDocument(pages: ["first page", "second page"])
+        let data = try #require(source.dataRepresentation())
+        let document = try MathPDFDocument(data: data)
+        let firstPage = try #require(document.pdfDocument.page(at: 0))
+        let secondPage = try #require(document.pdfDocument.page(at: 1))
+        let firstSelection = try #require(firstPage.selection(for: NSRange(location: 0, length: 5)))
+        let secondSelection = try #require(secondPage.selection(for: NSRange(location: 0, length: 6)))
+        let combinedSelection = PDFSelection(document: document.pdfDocument)
+        combinedSelection.add(firstSelection)
+        combinedSelection.add(secondSelection)
+        let controller = ReaderDocumentController(document: document)
+
+        let created = controller.addHighlightWithNote(
+            from: combinedSelection,
+            undoManager: nil
+        )
+
+        #expect(created == nil)
+        #expect(controller.annotationAuthoringNotice == .multiPageHighlightNote)
+        #expect(firstPage.annotations.allSatisfy { $0.type != "Highlight" })
+        #expect(secondPage.annotations.allSatisfy { $0.type != "Highlight" })
+    }
+
     @Test
     func pageActivationNeverCreatesANavigationRequest() throws {
         let document = MathPDFDocument()
@@ -722,6 +1398,12 @@ struct ReaderDocumentControllerTests {
         #expect(controller.navigationRequest?.opensNote == true)
         #expect(controller.navigationRequest?.pageIndex == 0)
         #expect(controller.navigationRequest?.bounds == annotation.bounds)
+        #expect(controller.navigationRequest?.startsEditing == false)
+
+        controller.presentNote(note, startsEditing: true)
+        #expect(controller.navigationRequest?.opensNote == true)
+        #expect(controller.navigationRequest?.startsEditing == true)
+        #expect(controller.navigationRequest?.annotation === annotation)
     }
 
     @Test
@@ -746,14 +1428,13 @@ struct ReaderDocumentControllerTests {
     }
 
     @Test
-    func deletingTheSelectedInspectorNoteClearsTransientStateAndUndoRestoresTheNote() throws {
+    func deletingTheSelectedNoteClearsSelectionAndUndoRestoresTheNote() throws {
         let document = MathPDFDocument()
         let page = try #require(document.pdfDocument.page(at: 0))
         let annotation = TestPDFFactory.annotation(.text, contents: "delete me", bounds: .init(x: 90, y: 500, width: 24, height: 24))
         page.addAnnotation(annotation)
         let controller = ReaderDocumentController(document: document)
         let note = try #require(controller.annotationActivated(annotation))
-        controller.pin(note, startsEditing: true)
         let undoManager = UndoManager()
         undoManager.groupsByEvent = false
 
@@ -763,17 +1444,73 @@ struct ReaderDocumentControllerTests {
 
         #expect(controller.selectedNoteID == nil)
         #expect(controller.notes.isEmpty)
-        if case .note = controller.inspectorDestination {
-            Issue.record("Deleting the active note must close its inspector")
-        }
 
         undoManager.undo()
         #expect(controller.notes.count == 1)
         #expect(controller.notes.first?.annotation === annotation)
         #expect(controller.selectedNoteID == nil)
-        if controller.inspectorDestination != nil {
-            Issue.record("Undo may restore the note, but it must not reopen stale transient UI")
-        }
+    }
+
+    @Test
+    func sidebarIDSelectionNavigatesButProgrammaticActivationDoesNot() throws {
+        let document = MathPDFDocument()
+        let page = try #require(document.pdfDocument.page(at: 0))
+        let first = TestPDFFactory.annotation(
+            .text,
+            contents: "first",
+            bounds: .init(x: 90, y: 500, width: 24, height: 24)
+        )
+        let second = TestPDFFactory.annotation(
+            .text,
+            contents: "second",
+            bounds: .init(x: 120, y: 500, width: 24, height: 24)
+        )
+        page.addAnnotation(first)
+        page.addAnnotation(second)
+        let controller = ReaderDocumentController(document: document)
+        let firstNote = try #require(controller.notes.first { $0.annotation === first })
+        let secondNote = try #require(controller.notes.first { $0.annotation === second })
+
+        _ = controller.annotationActivated(first)
+        #expect(controller.selectedNoteID == firstNote.id)
+        #expect(controller.navigationRequest == nil)
+
+        controller.selectNote(id: secondNote.id)
+        #expect(controller.selectedNoteID == secondNote.id)
+        #expect(controller.navigationRequest?.noteID == secondNote.id)
+        #expect(controller.navigationRequest?.opensNote == true)
+    }
+
+    @Test
+    func sidebarReactivationWaitsUntilTheSelectedSurfaceIsClosed() throws {
+        let document = MathPDFDocument()
+        let page = try #require(document.pdfDocument.page(at: 0))
+        let annotation = TestPDFFactory.annotation(
+            .text,
+            contents: "same row",
+            bounds: .init(x: 90, y: 500, width: 24, height: 24)
+        )
+        page.addAnnotation(annotation)
+        let controller = ReaderDocumentController(document: document)
+        let note = try #require(controller.notes.first)
+
+        controller.selectNote(note)
+        let firstToken = try #require(controller.navigationRequest?.token)
+        #expect(controller.pendingPresentedNoteID == note.id)
+
+        controller.selectNote(note)
+        #expect(controller.navigationRequest?.token == firstToken)
+
+        controller.annotationPresentationChanged(noteID: note.id, isPresented: true)
+        #expect(controller.pendingPresentedNoteID == nil)
+        #expect(controller.presentedNoteID == note.id)
+        controller.selectNote(note)
+        #expect(controller.navigationRequest?.token == firstToken)
+
+        controller.annotationPresentationChanged(noteID: note.id, isPresented: false)
+        controller.selectNote(note)
+        #expect(controller.navigationRequest?.token != firstToken)
+        #expect(controller.pendingPresentedNoteID == note.id)
     }
 
     @Test
@@ -793,7 +1530,7 @@ struct ReaderDocumentControllerTests {
         first.readerTool = .textNote
         firstDocument.preamble = #"\newcommand{\Q}{\mathbb{Q}}"#
         firstDocument.updateContents(of: firstAnnotation, to: "changed first", undoManager: nil)
-        first.pin(try #require(first.notes.first), startsEditing: true)
+        first.isPreambleInspectorPresented = true
 
         #expect(second.sidebarMode == .contents)
         #expect(second.searchText.isEmpty)
@@ -801,15 +1538,33 @@ struct ReaderDocumentControllerTests {
         #expect(secondDocument.preamble.isEmpty)
         #expect(second.notes.first?.contents == "second")
         #expect(second.selectedNoteID == nil)
-        if second.inspectorDestination != nil {
-            Issue.record("A document window must not inherit another window's inspector")
-        }
+        #expect(!second.isPreambleInspectorPresented)
     }
 }
 
 @MainActor
 @Suite("Reader viewport")
 struct ReaderViewportTests {
+    @Test
+    func replacingTheDocumentClearsSearchStateFromThePreviousDocument() throws {
+        let firstDocument = TestPDFFactory.textDocument("alpha")
+        let secondDocument = TestPDFFactory.textDocument("beta")
+        let view = PDFView(frame: CGRect(x: 0, y: 0, width: 800, height: 640))
+        view.document = firstDocument
+        let proxy = PDFViewProxy()
+        proxy.attach(view)
+        proxy.find("alpha")
+        #expect(proxy.searchQuery == "alpha")
+
+        view.document = secondDocument
+        proxy.attach(view)
+
+        #expect(proxy.searchQuery.isEmpty)
+        #expect(!proxy.isSearching)
+        #expect(proxy.searchResultCount == 0)
+        #expect(proxy.searchResultIndex == 0)
+    }
+
     @Test
     func revealingAComfortablyVisibleTargetIsAnExactViewportNoOp() throws {
         let document = TestPDFFactory.document(pageCount: 2)
@@ -860,21 +1615,152 @@ struct ReaderViewportTests {
         #expect(view.currentPage === targetPage)
         #expect(view.scaleFactor == originalScale)
     }
+
+    @Test
+    func samePageSidebarRevealCreatesABackDestination() throws {
+        let document = TestPDFFactory.document(pageCount: 1)
+        let view = PDFView(frame: CGRect(x: 0, y: 0, width: 600, height: 320))
+        view.displayMode = .singlePageContinuous
+        view.displaysPageBreaks = true
+        view.document = document
+        view.autoScales = false
+        view.scaleFactor = 1
+        view.layoutSubtreeIfNeeded()
+
+        let page = try #require(document.page(at: 0))
+        let documentView = try #require(view.documentView)
+        let originBefore = documentView.visibleRect.origin
+        let scaleBefore = view.scaleFactor
+
+        view.reveal(CGRect(x: 60, y: 24, width: 100, height: 18), on: page, padding: 24)
+
+        #expect(view.canGoBack)
+        #expect(documentView.visibleRect.origin != originBefore)
+        #expect(view.scaleFactor == scaleBefore)
+        let revealedOrigin = documentView.visibleRect.origin
+
+        view.goBack(nil)
+        #expect(abs(documentView.visibleRect.origin.y - originBefore.y) <= 12)
+        #expect(view.scaleFactor == scaleBefore)
+
+        view.goForward(nil)
+        #expect(abs(documentView.visibleRect.origin.y - revealedOrigin.y) <= 12)
+        #expect(view.scaleFactor == scaleBefore)
+    }
 }
 
 @MainActor
 @Suite("Reader annotation ownership")
 struct ReaderAnnotationOwnershipTests {
     @Test
-    func loadingADocumentClosesItsNativePDFPopupState() throws {
-        let document = TestPDFFactory.document(pageCount: 1)
+    func noteActivationReservesOnlyAnUnmodifiedSingleClick() {
+        #expect(AnnotationActivationGesturePolicy.interceptsForNoteActivation(
+            clickCount: 1,
+            modifierFlags: []
+        ))
+        #expect(!AnnotationActivationGesturePolicy.interceptsForNoteActivation(
+            clickCount: 2,
+            modifierFlags: []
+        ))
+        #expect(!AnnotationActivationGesturePolicy.interceptsForNoteActivation(
+            clickCount: 3,
+            modifierFlags: []
+        ))
+        for modifier: NSEvent.ModifierFlags in [.shift, .control, .option, .command] {
+            #expect(!AnnotationActivationGesturePolicy.interceptsForNoteActivation(
+                clickCount: 1,
+                modifierFlags: modifier
+            ))
+        }
+    }
+
+    @Test
+    func openEditingSessionReconcilesDocumentUndoWithoutLosingFocus() {
+        var liveUpdates: [String] = []
+        let session = AnnotationNoteEditingSession(
+            contents: "before",
+            color: AnnotationColorChoice.yellow.nsColor,
+            startsEditing: true,
+            onLiveUpdate: { liveUpdates.append($0); return true },
+            onCommit: { _ in },
+            onEditingChanged: { _ in }
+        )
+
+        session.replaceDraft(with: "draft")
+        session.acceptColorChange(.green)
+        session.reconcileDocumentState(
+            contents: "restored",
+            color: AnnotationColorChoice.yellow.nsColor
+        )
+
+        #expect(session.isEditing)
+        #expect(session.draft == "restored")
+        #expect(session.selectedColor == .yellow)
+        #expect(liveUpdates == ["draft"])
+        session.finishEditing()
+        #expect(!session.isEditing)
+    }
+
+    @Test
+    func activatingAnExistingEmptyAnnotationOpensReadFirst() throws {
+        #expect(!AnnotationSurfaceEditingPolicy.startsEditing(
+            noteContents: "",
+            canEditContents: true,
+            requested: false
+        ))
+        #expect(AnnotationSurfaceEditingPolicy.startsEditing(
+            noteContents: "",
+            canEditContents: true,
+            requested: true
+        ))
+    }
+
+    @Test
+    func presentationGraphOmitsPopupWhileSavedGraphRemainsReciprocal() throws {
+        let mathDocument = try MathPDFDocument(
+            data: TestPDFFactory.rawPopupGraph(shape: .reciprocal)
+        )
+        let livePage = try #require(mathDocument.pdfDocument.page(at: 0))
+        let liveHighlight = try #require(
+            livePage.annotations.first { $0.type == "Highlight" }
+        )
+        let hiddenPopup = try #require(mathDocument.popupCompanion(for: liveHighlight))
+
+        #expect(livePage.annotations.allSatisfy { $0.type != "Popup" })
+        #expect(hiddenPopup.page == nil)
+        #expect(liveHighlight.popup == nil)
+
+        mathDocument.preamble = #"\newcommand{\Q}{\mathbb{Q}}"#
+        let saved = try mathDocument.serializedData()
+        let diskDocument = try #require(PDFDocument(data: saved))
+        let diskPage = try #require(diskDocument.page(at: 0))
+        let diskHighlight = try #require(
+            diskPage.annotations.first { $0.type == "Highlight" }
+        )
+        let diskPopup = try #require(diskHighlight.popup)
+
+        #expect(diskPage.annotations.filter { $0.type == "Popup" }.count == 1)
+        #expect(diskPage.annotations.contains { $0 === diskPopup })
+        #expect((diskPopup.value(forAnnotationKey: .parent) as? PDFAnnotation) === diskHighlight)
+        #expect(diskPage.annotations.allSatisfy { $0.type != "Text" })
+    }
+
+    @Test
+    func configuredReaderKeepsDocumentSuppressedPopupState() throws {
+        let mathDocument = try MathPDFDocument(
+            data: TestPDFFactory.rawPopupGraph(
+                shape: .reciprocal,
+                includePopupSentinels: true
+            )
+        )
+        let document = mathDocument.pdfDocument
         let page = try #require(document.page(at: 0))
-        let highlight = TestPDFFactory.annotation(.highlight, contents: "one note", bounds: .init(x: 80, y: 600, width: 160, height: 18))
-        let popup = TestPDFFactory.annotation(.popup, contents: "one note", bounds: .init(x: 260, y: 500, width: 180, height: 120))
-        page.addAnnotation(highlight)
-        page.addAnnotation(popup)
-        highlight.popup = popup
-        popup.isOpen = true
+        let highlight = try #require(page.annotations.first { $0.type == "Highlight" })
+        let popup = try #require(mathDocument.popupCompanion(for: highlight))
+        #expect(!popup.isOpen)
+        #expect(!page.annotations.contains { $0 === popup })
+        #expect(popup.page == nil)
+        #expect(highlight.popup == nil)
 
         let container = ReaderContainerView(frame: CGRect(x: 0, y: 0, width: 800, height: 640))
         container.configure(
@@ -883,16 +1769,43 @@ struct ReaderAnnotationOwnershipTests {
             noteForAnnotation: { annotation in
                 PDFNoteExtractor.note(for: annotation, pageIndex: 0, includeEmptyContents: true)
             },
-            onUpdateNote: { _, _ in },
-            onPinNote: { _, _ in },
+            capabilitiesForAnnotation: { annotation in
+                AnnotationNoteCapabilities(
+                    canEditContents: mathDocument.canEdit(annotation),
+                    canDelete: mathDocument.canEdit(annotation),
+                    canChangeColor: mathDocument.canChangeColor(of: annotation),
+                    editingUnavailableReason: nil,
+                    colorUnavailableReason: nil
+                )
+            },
+            onUpdateNote: { _, _ in true },
+            onCommitNoteEdit: { _, _ in },
+            onDeleteNote: { _ in },
+            onUpdateColor: { _, _, _ in true },
             onCancelTextNote: {},
             onCreateTextNote: { _, _ in nil },
-            preamble: ""
+            preamble: "",
+            annotationRevision: mathDocument.annotationRevision,
+            enforceRuntimeAnnotationPresentation: mathDocument.enforceRuntimeAnnotationPresentation
         )
 
         #expect(!popup.isOpen)
-        #expect(!highlight.popup!.isOpen)
+        #expect(highlight.popup == nil)
+        #expect(page.annotations.allSatisfy { $0.type != "Popup" })
         #expect(PDFNoteExtractor.extractNotes(from: document).count == 1)
+
+        // Model PDFKit's observed lazy reinsertion after an unrelated page
+        // operation. The reader's layout guard must remove the native Popup
+        // again while keeping the reciprocal owner edge in persistence only.
+        page.addAnnotation(popup)
+        highlight.popup = popup
+        _ = popup.setValue(highlight, forAnnotationKey: .parent)
+        #expect(page.annotations.contains { $0 === popup })
+        container.needsLayout = true
+        container.layoutSubtreeIfNeeded()
+        #expect(page.annotations.allSatisfy { $0.type != "Popup" })
+        #expect(highlight.popup == nil)
+        #expect(mathDocument.popupCompanion(for: highlight) === popup)
     }
 }
 
@@ -902,6 +1815,11 @@ private enum PopupGraphShape {
     case reciprocal
 }
 
+private enum LockedAnnotationPart: Equatable {
+    case owner
+    case popup
+}
+
 private struct RawPopupState: Equatable {
     let contents: String?
     let modificationDate: String?
@@ -909,7 +1827,19 @@ private struct RawPopupState: Equatable {
     let isOpen: Bool
     let hasAppearance: Bool
     let sentinel: String?
-    let hasName: Bool
+    let name: String?
+    let richContents: String?
+    let color: [Double]
+}
+
+private struct RawOwnerState: Equatable {
+    let contents: String?
+    let modificationDate: String?
+    let richContents: String?
+    let name: String?
+    let flags: Int
+    let sentinel: String?
+    let hasPopup: Bool
 }
 
 @MainActor
@@ -928,25 +1858,29 @@ private enum TestPDFFactory {
     }
 
     static func textDocument(_ text: String) -> PDFDocument {
+        textDocument(pages: [text])
+    }
+
+    static func textDocument(pages: [String]) -> PDFDocument {
         let data = NSMutableData()
         let consumer = CGDataConsumer(data: data)!
         var box = CGRect(x: 0, y: 0, width: 612, height: 792)
         let context = CGContext(consumer: consumer, mediaBox: &box, nil)!
-        context.beginPDFPage(nil)
-
-        let attributed = NSAttributedString(
-            string: text,
-            attributes: [
-                NSAttributedString.Key(kCTFontAttributeName as String): CTFontCreateWithName("Helvetica" as CFString, 16, nil),
-                NSAttributedString.Key(kCTForegroundColorAttributeName as String): CGColor(gray: 0, alpha: 1),
-            ]
-        )
-        let framesetter = CTFramesetterCreateWithAttributedString(attributed)
-        let path = CGPath(rect: CGRect(x: 72, y: 500, width: 468, height: 200), transform: nil)
-        let frame = CTFramesetterCreateFrame(framesetter, CFRange(), path, nil)
-        CTFrameDraw(frame, context)
-
-        context.endPDFPage()
+        for text in pages {
+            context.beginPDFPage(nil)
+            let attributed = NSAttributedString(
+                string: text,
+                attributes: [
+                    NSAttributedString.Key(kCTFontAttributeName as String): CTFontCreateWithName("Helvetica" as CFString, 16, nil),
+                    NSAttributedString.Key(kCTForegroundColorAttributeName as String): CGColor(gray: 0, alpha: 1),
+                ]
+            )
+            let framesetter = CTFramesetterCreateWithAttributedString(attributed)
+            let path = CGPath(rect: CGRect(x: 72, y: 500, width: 468, height: 200), transform: nil)
+            let frame = CTFramesetterCreateFrame(framesetter, CFRange(), path, nil)
+            CTFrameDraw(frame, context)
+            context.endPDFPage()
+        }
         context.closePDF()
         return PDFDocument(data: data as Data)!
     }
@@ -960,14 +1894,18 @@ private enum TestPDFFactory {
     static func rawPopupGraph(
         shape: PopupGraphShape,
         includeNames: Bool = true,
-        includePopupSentinels: Bool = false
+        includePopupSentinels: Bool = false,
+        includeOwnerSentinels: Bool = false
     ) -> Data {
         let ownerEdge = shape == .parentOnly ? "" : "/Popup 6 0 R"
         let parentEdge = shape == .ownerOnly ? "" : "/Parent 5 0 R"
         let ownerName = includeNames ? "/NM (raw-owner)" : ""
         let popupName = includeNames ? "/NM (raw-popup)" : ""
         let popupSentinels = includePopupSentinels
-            ? "/Contents (popup-private) /M (D:20260714010101Z) /F 4 /Open true /AP << /N 7 0 R >> /XMathPDFSentinel (keep-me)"
+            ? "/Contents (popup-private) /M (D:20260714010101Z) /RC (popup-rich) /C [1 0 0] /F 4 /Open true /AP << /N 7 0 R >> /XMathPDFSentinel (keep-me)"
+            : ""
+        let ownerSentinels = includeOwnerSentinels
+            ? "/M (D:20260713010101Z) /RC (owner-rich) /XMathPDFOwnerSentinel (keep-owner)"
             : ""
 
         var objects = [
@@ -975,7 +1913,7 @@ private enum TestPDFFactory {
             "<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
             "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << >> /Contents 4 0 R /Annots [5 0 R 6 0 R] >>",
             "<< /Length 0 >>\nstream\n\nendstream",
-            "<< /Type /Annot /Subtype /Highlight /Rect [80 600 240 618] /QuadPoints [80 618 240 618 80 600 240 600] /Contents (owner note) /C [1 1 0] \(ownerName) \(ownerEdge) >>",
+            "<< /Type /Annot /Subtype /Highlight /Rect [80 600 240 618] /QuadPoints [80 618 240 618 80 600 240 600] /Contents (owner note) /C [1 1 0] \(ownerName) \(ownerEdge) \(ownerSentinels) >>",
             "<< /Type /Annot /Subtype /Popup /Rect [250 500 430 620] \(popupName) \(parentEdge) \(popupSentinels) >>",
         ]
         if includePopupSentinels {
@@ -984,6 +1922,87 @@ private enum TestPDFFactory {
             )
         }
         return rawPDF(objects: objects)
+    }
+
+    static func rawOwnerWithoutPopup() -> Data {
+        rawPDF(objects: [
+            "<< /Type /Catalog /Pages 2 0 R >>",
+            "<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+            "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << >> /Contents 4 0 R /Annots [5 0 R] >>",
+            "<< /Length 0 >>\nstream\n\nendstream",
+            "<< /Type /Annot /Subtype /Highlight /Rect [80 600 240 618] /QuadPoints [80 618 240 618 80 600 240 600] /Contents (owner note) /C [1 1 0] /M (D:20260713010101Z) /RC (owner-rich) /XMathPDFOwnerSentinel (keep-owner) >>",
+        ])
+    }
+
+    static func rawLockedPopupGraph(_ lockedPart: LockedAnnotationPart) -> Data {
+        let ownerFlags = lockedPart == .owner ? 64 : 4
+        let popupFlags = lockedPart == .popup ? 64 : 4
+        return rawPDF(objects: [
+            "<< /Type /Catalog /Pages 2 0 R >>",
+            "<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+            "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << >> /Contents 4 0 R /Annots [5 0 R 6 0 R] >>",
+            "<< /Length 0 >>\nstream\n\nendstream",
+            "<< /Type /Annot /Subtype /Highlight /Rect [80 600 240 618] /QuadPoints [80 618 240 618 80 600 240 600] /Contents (locked owner note) /NM (locked-owner) /C [1 1 0] /F \(ownerFlags) /Popup 6 0 R /XMathPDFOwnerSentinel (keep-owner) >>",
+            "<< /Type /Annot /Subtype /Popup /Rect [250 500 430 620] /NM (locked-popup) /C [1 0 0] /F \(popupFlags) /Parent 5 0 R /Contents (popup-private) /M (D:20260714010101Z) /RC (popup-rich) /Open true /XMathPDFSentinel (keep-me) >>",
+        ])
+    }
+
+    static func rawLegacyOrphanGraph(ambiguous: Bool = false) -> Data {
+        let owner = "<< /Type /Annot /Subtype /Highlight /Rect [80 600 240 618] /QuadPoints [80 618 240 618 80 600 240 600] /Contents (legacy owner note) /C [1 1 0] /F 4 /AP << /N \(ambiguous ? 8 : 7) 0 R >> >>"
+        let popup = "<< /Type /Annot /Subtype /Popup /Rect [244 622 316 658] /C [1 1 0] /F 4 /M (D:20260714010101Z) >>"
+
+        if ambiguous {
+            return rawPDF(objects: [
+                "<< /Type /Catalog /Pages 2 0 R >>",
+                "<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+                "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << >> /Contents 4 0 R /Annots [5 0 R 6 0 R 7 0 R] >>",
+                "<< /Length 0 >>\nstream\n\nendstream",
+                owner,
+                popup,
+                "<< /Type /Annot /Subtype /Highlight /Rect [80 600 240 618] /QuadPoints [80 618 240 618 80 600 240 600] /Contents (second possible owner) /C [1 1 0] /F 4 /AP << /N 8 0 R >> >>",
+                "<< /Type /XObject /Subtype /Form /BBox [0 0 160 18] /Resources << >> /Length 0 >>\nstream\n\nendstream",
+            ])
+        }
+
+        return rawPDF(objects: [
+            "<< /Type /Catalog /Pages 2 0 R >>",
+            "<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+            "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << >> /Contents 4 0 R /Annots [5 0 R 6 0 R] >>",
+            "<< /Length 0 >>\nstream\n\nendstream",
+            owner,
+            popup,
+            "<< /Type /XObject /Subtype /Form /BBox [0 0 160 18] /Resources << >> /Length 0 >>\nstream\n\nendstream",
+        ])
+    }
+
+    static func rawOffAnnotsPopupCloneGraph(cloneMatches: Bool = true) -> Data {
+        let owner = "<< /Type /Annot /Subtype /Text /Rect [80 600 104 624] /Contents (off-array owner note) /NM (off-array-owner) /Popup 6 0 R /F 4 /C [1 1 0] >>"
+        let clone = cloneMatches
+            ? owner
+            : "<< /Type /Annot /Subtype /Text /Rect [80 600 104 624] /Contents (off-array owner note) /NM (off-array-owner) /Popup 6 0 R /F 4 /C [1 1 0] /Subj (near clone only) >>"
+        return rawPDF(objects: [
+            "<< /Type /Catalog /Pages 2 0 R >>",
+            "<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+            "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << >> /Contents 4 0 R /Annots [5 0 R] >>",
+            "<< /Length 0 >>\nstream\n\nendstream",
+            owner,
+            "<< /Type /Annot /Subtype /Popup /Rect [110 520 290 640] /Parent 7 0 R /Contents (popup-private) /NM (off-array-popup) /M (D:20260714010101Z) /F 4 /Open true /AP << /N 8 0 R >> /XMathPDFSentinel (keep-me) >>",
+            clone,
+            "<< /Type /XObject /Subtype /Form /BBox [0 0 10 10] /Resources << >> /Length 0 >>\nstream\n\nendstream",
+        ])
+    }
+
+    static func rawCrossPageDuplicateNames() -> Data {
+        rawPDF(objects: [
+            "<< /Type /Catalog /Pages 2 0 R >>",
+            "<< /Type /Pages /Kids [3 0 R 5 0 R] /Count 2 >>",
+            "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << >> /Contents 4 0 R /Annots [7 0 R] >>",
+            "<< /Length 0 >>\nstream\n\nendstream",
+            "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << >> /Contents 6 0 R /Annots [8 0 R] >>",
+            "<< /Length 0 >>\nstream\n\nendstream",
+            "<< /Type /Annot /Subtype /Highlight /Rect [80 600 240 618] /Contents (first page) /NM (reused-across-pages) >>",
+            "<< /Type /Annot /Subtype /Highlight /Rect [80 560 240 578] /Contents (second page) /NM (reused-across-pages) >>",
+        ])
     }
 
     static func rawDuplicateNameGraph() -> Data {
@@ -996,6 +2015,29 @@ private enum TestPDFFactory {
             "<< /Type /Annot /Subtype /Popup /Rect [250 500 430 620] /NM (popup-one) /Parent 5 0 R >>",
             "<< /Type /Annot /Subtype /Highlight /Rect [80 560 240 578] /Contents (second) /NM (duplicate-owner) /Popup 8 0 R >>",
             "<< /Type /Annot /Subtype /Popup /Rect [250 440 430 560] /NM (popup-two) /Parent 7 0 R >>",
+        ])
+    }
+
+    static func rawPopupGraphWithMismatchedColor() -> Data {
+        rawPDF(objects: [
+            "<< /Type /Catalog /Pages 2 0 R >>",
+            "<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+            "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << >> /Contents 4 0 R /Annots [5 0 R 6 0 R] >>",
+            "<< /Length 0 >>\nstream\n\nendstream",
+            "<< /Type /Annot /Subtype /Highlight /Rect [80 600 240 618] /QuadPoints [80 618 240 618 80 600 240 600] /Contents (owner note) /C [1 1 0] /NM (raw-owner) /Popup 6 0 R >>",
+            "<< /Type /Annot /Subtype /Popup /Rect [250 500 430 620] /C [1 0 0] /NM (raw-popup) /Parent 5 0 R /AP << /N 7 0 R >> >>",
+            "<< /Type /XObject /Subtype /Form /BBox [0 0 180 120] /Resources << >> /Length 0 >>\nstream\n\nendstream",
+        ])
+    }
+
+    static func rawHighlightWithAppearance() -> Data {
+        rawPDF(objects: [
+            "<< /Type /Catalog /Pages 2 0 R >>",
+            "<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+            "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << >> /Contents 4 0 R /Annots [5 0 R] >>",
+            "<< /Length 0 >>\nstream\n\nendstream",
+            "<< /Type /Annot /Subtype /Highlight /Rect [80 600 240 618] /QuadPoints [80 618 240 618 80 600 240 600] /Contents (owner note) /C [1 1 0] /NM (appearance-owner) /AP << /N 6 0 R >> >>",
+            "<< /Type /XObject /Subtype /Form /BBox [0 0 160 18] /Resources << >> /Length 0 >>\nstream\n\nendstream",
         ])
     }
 
@@ -1027,9 +2069,7 @@ private enum TestPDFFactory {
                 CGPDFDictionaryGetDictionary(dictionary, $0, &appearance)
             }
             var nameObject: CGPDFObjectRef?
-            let hasName = "NM".withCString {
-                CGPDFDictionaryGetObject(dictionary, $0, &nameObject)
-            }
+            _ = "NM".withCString { CGPDFDictionaryGetObject(dictionary, $0, &nameObject) }
             return RawPopupState(
                 contents: dictionaryString(dictionary, key: "Contents"),
                 modificationDate: dictionaryString(dictionary, key: "M"),
@@ -1037,7 +2077,9 @@ private enum TestPDFFactory {
                 isOpen: isOpen != 0,
                 hasAppearance: hasAppearance,
                 sentinel: dictionaryString(dictionary, key: "XMathPDFSentinel"),
-                hasName: hasName
+                name: dictionaryString(dictionary, key: "NM"),
+                richContents: dictionaryString(dictionary, key: "RC"),
+                color: dictionaryNumberArray(dictionary, key: "C")
             )
         }
         Issue.record("The raw fixture has no Popup annotation.")
@@ -1048,8 +2090,148 @@ private enum TestPDFFactory {
             isOpen: false,
             hasAppearance: false,
             sentinel: nil,
-            hasName: false
+            name: nil,
+            richContents: nil,
+            color: []
         )
+    }
+
+    static func rawFirstOwnerState(in data: Data) throws -> RawOwnerState {
+        let provider = try #require(CGDataProvider(data: data as CFData))
+        let document = try #require(CGPDFDocument(provider))
+        let page = try #require(document.page(at: 1))
+        let pageDictionary = try #require(page.dictionary)
+        var annotations: CGPDFArrayRef?
+        let hasAnnotations = "Annots".withCString {
+            CGPDFDictionaryGetArray(pageDictionary, $0, &annotations)
+        }
+        #expect(hasAnnotations)
+        let annotationArray = try #require(annotations)
+
+        for index in 0..<CGPDFArrayGetCount(annotationArray) {
+            var dictionary: CGPDFDictionaryRef?
+            guard CGPDFArrayGetDictionary(annotationArray, index, &dictionary),
+                  let dictionary,
+                  dictionaryName(dictionary, key: "Subtype") != "Popup"
+            else { continue }
+            var flags: CGPDFInteger = 0
+            _ = "F".withCString { CGPDFDictionaryGetInteger(dictionary, $0, &flags) }
+            var popupObject: CGPDFObjectRef?
+            let hasPopup = "Popup".withCString {
+                CGPDFDictionaryGetObject(dictionary, $0, &popupObject)
+            }
+            return RawOwnerState(
+                contents: dictionaryString(dictionary, key: "Contents"),
+                modificationDate: dictionaryString(dictionary, key: "M"),
+                richContents: dictionaryString(dictionary, key: "RC"),
+                name: dictionaryString(dictionary, key: "NM"),
+                flags: flags,
+                sentinel: dictionaryString(dictionary, key: "XMathPDFOwnerSentinel"),
+                hasPopup: hasPopup
+            )
+        }
+        Issue.record("The raw fixture has no owning annotation.")
+        return RawOwnerState(
+            contents: nil,
+            modificationDate: nil,
+            richContents: nil,
+            name: nil,
+            flags: 0,
+            sentinel: nil,
+            hasPopup: false
+        )
+    }
+
+    static func rawAnnotationSubtypes(in data: Data) throws -> [String] {
+        let provider = try #require(CGDataProvider(data: data as CFData))
+        let document = try #require(CGPDFDocument(provider))
+        let page = try #require(document.page(at: 1))
+        let pageDictionary = try #require(page.dictionary)
+        var annotations: CGPDFArrayRef?
+        #expect("Annots".withCString { CGPDFDictionaryGetArray(pageDictionary, $0, &annotations) })
+        let annotationArray = try #require(annotations)
+        return (0..<CGPDFArrayGetCount(annotationArray)).compactMap { index in
+            var dictionary: CGPDFDictionaryRef?
+            guard CGPDFArrayGetDictionary(annotationArray, index, &dictionary),
+                  let dictionary else { return nil }
+            return dictionaryName(dictionary, key: "Subtype")
+        }
+    }
+
+    static func rawAnnotationNames(in data: Data) throws -> [String] {
+        let provider = try #require(CGDataProvider(data: data as CFData))
+        let document = try #require(CGPDFDocument(provider))
+        let page = try #require(document.page(at: 1))
+        let pageDictionary = try #require(page.dictionary)
+        var annotations: CGPDFArrayRef?
+        #expect("Annots".withCString { CGPDFDictionaryGetArray(pageDictionary, $0, &annotations) })
+        let annotationArray = try #require(annotations)
+        return (0..<CGPDFArrayGetCount(annotationArray)).compactMap { index in
+            var dictionary: CGPDFDictionaryRef?
+            guard CGPDFArrayGetDictionary(annotationArray, index, &dictionary),
+                  let dictionary else { return nil }
+            return dictionaryString(dictionary, key: "NM")
+        }
+    }
+
+    static func rawFirstHighlightHasAppearance(in data: Data) throws -> Bool {
+        let provider = try #require(CGDataProvider(data: data as CFData))
+        let document = try #require(CGPDFDocument(provider))
+        let page = try #require(document.page(at: 1))
+        let pageDictionary = try #require(page.dictionary)
+        var annotations: CGPDFArrayRef?
+        let hasAnnotations = "Annots".withCString {
+            CGPDFDictionaryGetArray(pageDictionary, $0, &annotations)
+        }
+        #expect(hasAnnotations)
+        let annotationArray = try #require(annotations)
+
+        for index in 0..<CGPDFArrayGetCount(annotationArray) {
+            var dictionary: CGPDFDictionaryRef?
+            guard CGPDFArrayGetDictionary(annotationArray, index, &dictionary),
+                  let dictionary,
+                  dictionaryName(dictionary, key: "Subtype") == "Highlight"
+            else { continue }
+            var appearance: CGPDFDictionaryRef?
+            return "AP".withCString {
+                CGPDFDictionaryGetDictionary(dictionary, $0, &appearance)
+            }
+        }
+        Issue.record("The raw fixture has no Highlight annotation.")
+        return false
+    }
+
+    static func rawFirstPopupColor(in data: Data) throws -> [Double] {
+        let provider = try #require(CGDataProvider(data: data as CFData))
+        let document = try #require(CGPDFDocument(provider))
+        let page = try #require(document.page(at: 1))
+        let pageDictionary = try #require(page.dictionary)
+        var annotations: CGPDFArrayRef?
+        let hasAnnotations = "Annots".withCString {
+            CGPDFDictionaryGetArray(pageDictionary, $0, &annotations)
+        }
+        #expect(hasAnnotations)
+        let annotationArray = try #require(annotations)
+
+        for index in 0..<CGPDFArrayGetCount(annotationArray) {
+            var dictionary: CGPDFDictionaryRef?
+            guard CGPDFArrayGetDictionary(annotationArray, index, &dictionary),
+                  let dictionary,
+                  dictionaryName(dictionary, key: "Subtype") == "Popup"
+            else { continue }
+            var color: CGPDFArrayRef?
+            let hasColor = "C".withCString {
+                CGPDFDictionaryGetArray(dictionary, $0, &color)
+            }
+            guard hasColor, let color else { return [] }
+            return (0..<CGPDFArrayGetCount(color)).map { component in
+                var value: CGPDFReal = 0
+                _ = CGPDFArrayGetNumber(color, component, &value)
+                return Double(value)
+            }
+        }
+        Issue.record("The raw fixture has no Popup annotation.")
+        return []
     }
 
     private static func rawPDF(objects: [String]) -> Data {
@@ -1091,6 +2273,23 @@ private enum TestPDFFactory {
         guard found, let value else { return nil }
         return CGPDFStringCopyTextString(value) as String?
     }
+
+    private static func dictionaryNumberArray(
+        _ dictionary: CGPDFDictionaryRef,
+        key: String
+    ) -> [Double] {
+        var array: CGPDFArrayRef?
+        let found = key.withCString {
+            CGPDFDictionaryGetArray(dictionary, $0, &array)
+        }
+        guard found, let array else { return [] }
+        return (0..<CGPDFArrayGetCount(array)).map { index in
+            var value: CGPDFReal = 0
+            _ = CGPDFArrayGetNumber(array, index, &value)
+            return Double(value)
+        }
+    }
+
 }
 
 private var katexAssetURL: URL {
