@@ -1,5 +1,8 @@
 # Robust MathJax Note Renderer
 
+> **Historical and non-operational.** This completed MathJax plan preserves
+> evidence only. Its commands and renderer assumptions are superseded.
+
 This ExecPlan is a living document. The sections `Progress`, `Surprises & Discoveries`, `Decision Log`, and `Outcomes & Retrospective` must be kept up to date as work proceeds.
 
 This document must be maintained in accordance with [PLANS.md](../../PLANS.md).

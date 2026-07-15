@@ -1,5 +1,8 @@
 # MVP PDF Reader And Math Note Rendering
 
+> **Historical and non-operational.** This completed MVP plan preserves evidence
+> only. Use the current product, state, and testing documents for instructions.
+
 This ExecPlan is a living document. The sections `Progress`, `Surprises & Discoveries`, `Decision Log`, and `Outcomes & Retrospective` must be kept up to date as work proceeds.
 
 This document must be maintained in accordance with [PLANS.md](../../PLANS.md).

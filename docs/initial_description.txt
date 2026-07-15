@@ -12,7 +12,7 @@ Works with highlights that have attached notes.
 Works with box-style note annotations.
 Clicking a note icon/box opens a popover for that note.
 Notes selected from the sidebar also open in context.
-When a PDF carries Preview-style popup companion boxes for highlight notes, MathPDF should treat the owning annotation's plain-text contents as authoritative and avoid duplicate in-app note UI. Because PDFKit does not reliably preserve `/Popup` and `/Parent` relationships after editing, MathPDF normalizes popup companions out of the serialized copy while retaining the note text on the owning highlight or text annotation. Saving must not mutate the live document merely to perform this normalization.
+When a PDF carries Preview-style popup companions for highlight notes, MathPDF treats the owning annotation's plain-text contents as authoritative and avoids duplicate in-app note UI. In memory it suppresses PDFKit's popup presentation and renders its own affordance. On disk it preserves or creates a standards-valid reciprocal `/Popup` and `/Parent` relationship. Saving reparses and rejects output whose page, annotation, relationship, or metadata semantics changed unexpectedly.
 Math behavior:
 Supports common MathJax-style delimiters and broadly compatible math syntax.
 Rendering should be forgiving and user-friendly.
@@ -35,7 +35,7 @@ transient reading surface used inside the app.
 Design intent:
 A minimal, tasteful, “just works” reader that feels native and uncluttered, while giving technical users first-class math note readability.
 
-Current product contract (2026-07-12):
+Product contract:
 - The target is the user's research-PDF workflow: multiple document windows, outlines, search, stable page and zoom navigation, highlighting, box notes, rendered math notes, printing, and trustworthy saving.
 - Signature authoring, image editing, cropping, OCR, and comprehensive PDF-form authoring are outside this replacement target.
 - Clicking an annotation already visible in the PDF must never change the document's viewport. Sidebar navigation preserves scale and scrolls only as much as needed.
@@ -45,6 +45,3 @@ Current product contract (2026-07-12):
 - The unified toolbar uses a document title/page subtitle, direct page entry, one grouped zoom control, and an always-visible native search field with contextual result navigation.
 - Per-document preambles intentionally support a small annotation-oriented subset: zero-argument aliases, simple parameterized commands, and math operators. Unsupported full-document TeX is ignored gracefully.
 - The preamble is stored as a versioned MathPDF marker inside standard PDF Keywords so unrelated metadata survives and non-MathPDF viewers still see ordinary PDF annotations.
-- Local validation uses realistic excerpts copied to `/tmp/MathPDF-Fixtures`; it never modifies the supplied PDFs in `TestPDFs/` or requests broad Documents-folder access.
-- Detailed local automation and fixture-safety rules live in `docs/TESTING.md`.
-- Detailed implementation and validation requirements live in `docs/plans/preview_replacement_overhaul.md`.

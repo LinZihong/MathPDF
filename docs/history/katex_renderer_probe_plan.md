@@ -1,5 +1,9 @@
 # KaTeX Renderer Probe
 
+> **Historical and non-operational.** This completed investigation preserves
+> evidence only. Use `AGENTS.md`, `docs/CURRENT.md`, and `docs/TESTING.md` for
+> current commands and claims.
+
 This ExecPlan is a living document. The sections `Progress`, `Surprises & Discoveries`, `Decision Log`, and `Outcomes & Retrospective` must be kept up to date as work proceeds.
 
 This document must be maintained in accordance with [PLANS.md](../../PLANS.md).

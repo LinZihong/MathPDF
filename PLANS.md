@@ -1,32 +1,48 @@
 # MathPDF Work Cards
 
-This repository used to require long self-contained ExecPlans. As of 2026-05-02, new and active planning documents should use the shorter Work Card workflow described here. Older ExecPlans in `docs/plans/` are historical records and do not need to be expanded or rewritten unless they become active again.
+This repository used to require long self-contained ExecPlans. New and active
+planning documents use the shorter Work Card workflow described here. Active
+Work Cards live in `docs/plans/`; non-active plans live in `docs/history/` and
+do not need to be rewritten unless their work becomes active again.
 
 ## Purpose
 
 Work Cards exist to preserve enough intent for a future session to continue safely without spending excessive context on stale prose. They are handoff documents, not full implementation manuals. A coding agent should still inspect the current working tree, read the relevant source files, and validate behavior directly.
 
-Use a Work Card when a task is larger than a small single-file edit, changes product behavior, crosses architectural boundaries, or is likely to continue across sessions. Very small fixes can be handled without a Work Card, but `docs/CURRENT.md` should still be updated when the repository is left in an unfinished state.
+Use a Work Card when a task materially changes accepted product behavior,
+crosses architectural boundaries, or is likely to continue across sessions.
+Small, self-contained fixes do not need planning ceremony. Update
+`docs/CURRENT.md` only when the repository is left with active unfinished work
+or when its recorded state would otherwise become false.
 
-## Source Order
+## Document Responsibilities
 
-When instructions conflict, use this order:
+Do not force unlike documents into one global source hierarchy:
 
-1. Direct user instructions in the current conversation.
-2. `docs/initial_description.txt`.
-3. `AGENTS.md`.
-4. `docs/CURRENT.md`.
-5. Active Work Cards in `docs/plans/`.
-6. Historical plans and older ExecPlans.
-7. Existing code and tests.
+- Direct user instructions control the current task.
+- `docs/initial_description.txt` owns accepted product behavior and scope.
+- `AGENTS.md` owns durable repository-wide agent constraints.
+- `docs/TESTING.md` owns validation and local safety rules.
+- `docs/CURRENT.md` owns active working-tree and validation state, which must be
+  checked against the working tree and fresh evidence.
+- Active Work Cards own only the delta, decisions, and next steps for their
+  workstream.
+- Historical plans and reports preserve context; their commands and status
+  claims are not current instructions.
 
 ## Standard Files
 
-`docs/CURRENT.md` is the first-stop handoff file. Keep it short enough to read every session. It should say what is active, what is known to work, what is unfinished, and the next recommended step.
+`docs/CURRENT.md` is the first-stop state file after the product description.
+Keep it short enough to read every session. Separate committed-and-validated,
+uncommitted-or-unvalidated, and planned-only facts explicitly.
 
-`docs/plans/*.md` contains Work Cards. A Work Card tracks one workstream and should usually fit in 80-150 lines. Prefer concise bullets over narrative. Do not repeat product background that already lives in `docs/initial_description.txt`.
+`docs/plans/*.md` contains Work Cards. A Work Card tracks one workstream and
+should usually fit in 80-150 lines. Prefer concise bullets over narrative. Do
+not repeat stable product requirements or testing protocols owned elsewhere.
 
-`docs/plans/EXECPLAN_INDEX.md` remains the plan index for now. Update it when creating, completing, pausing, superseding, or abandoning a Work Card. The name is historical.
+`docs/plans/WORK_CARD_INDEX.md` indexes active and historical workstreams.
+Update it when creating, completing, pausing, superseding, or abandoning a Work
+Card.
 
 `docs/decisions/*.md` is for durable decisions. Create one only when a decision changes product behavior, PDF annotation compatibility, metadata persistence, signing or sandboxing, math rendering behavior, or an architecture boundary. Keep each decision record short.
 
@@ -79,7 +95,8 @@ Use this structure for new Work Cards:
 
 ## Writing Rules
 
-Keep Work Cards compact and current. A stale short note is easier to repair than a stale essay, so prefer present facts over speculative implementation detail.
+Keep Work Cards compact and current. Prefer present deltas and decisions over
+completed product history or speculative implementation detail.
 
 Do not treat a Work Card as a substitute for reading code. Before implementing, inspect the files you will touch and verify assumptions against the working tree.
 
@@ -87,24 +104,26 @@ Record assumptions only when they affect scope, compatibility, or architecture. 
 
 Use checkboxes only for actionable remaining work in `Next Steps`. Completed history belongs in `Current State`, `Validation`, or git history.
 
-When product-facing behavior changes, update `docs/initial_description.txt` or add a focused product note in `docs/` as part of the same work.
+When accepted product-facing behavior changes, update
+`docs/initial_description.txt` or add a focused product note in `docs/` as part
+of the same work. Do not promote an experimental working-tree implementation to
+the product contract before the decision is accepted.
 
 For MathPDF, always state whether the task changes PDF annotation compatibility, math rendering fallback behavior, or per-document preamble metadata. These are core product constraints.
 
-## Validation
-
-Use real commands that match this repository. Prefer the narrowest command that proves the touched contract, then expand only when risk justifies it.
-
-Common commands:
-
-    xcodebuild -project MathPDF.xcodeproj -scheme MathPDF -derivedDataPath .build/SignedDerivedData build
-
-    xcodebuild -project MathPDF.xcodeproj -scheme MathPDF -derivedDataPath .build/SignedDerivedData test
-
-    scripts/build-and-launch.sh --signed "pdfs for testing/ell_curves.pdf"
-
-When reporting work, always include whether the task was treated as greenfield or existing-project, the exact scheme used, the simulator used or an explicit statement that none was used, and the smallest validation steps actually run.
+At a genuine phase boundary, make the prior state recoverable before starting a
+risky architectural slice, update `docs/CURRENT.md`, and label implementation
+separately from validation. Create a git checkpoint only when committing is in
+scope. A blocked GUI gate does not block useful headless work, and no delegated
+task may own indefinite waiting.
 
 ## Migration Note
 
-Do not expand old ExecPlans to match this new format just for consistency. If an old ExecPlan becomes active again, summarize its useful current facts into a compact Work Card and mark the old plan as historical, superseded, or completed in `docs/plans/EXECPLAN_INDEX.md`.
+Do not expand old ExecPlans to match this new format just for consistency. If an
+old ExecPlan becomes active again, summarize its useful current facts into a
+compact Work Card and record the relationship in
+`docs/plans/WORK_CARD_INDEX.md`.
+
+Commands in historical plans are evidence of what was run then, not reusable
+instructions. Current validation always comes from `AGENTS.md` and
+`docs/TESTING.md`.

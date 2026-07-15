@@ -1,160 +1,137 @@
 # MathPDF Agent Guide
 
-This repository is a macOS SwiftUI app (`MathPDF`) with unit tests in `MathPDFTests` and UI tests in `MathPDFUITests`.
+MathPDF is an existing macOS SwiftUI/PDFKit project. Its product source of
+truth is [`docs/initial_description.txt`](docs/initial_description.txt). Read
+that first, then [`docs/CURRENT.md`](docs/CURRENT.md) for the active state. Do
+not infer extra platforms, features, or storage formats.
 
-Start from [docs/initial_description.txt](/Users/linzihong/Documents/Development/Xcode/MathPDF/docs/initial_description.txt). That file is the current product source of truth. Do not infer extra features, extra platforms, or storage formats beyond what it says. If a task would materially expand scope, stop and make the assumption explicit.
+The project documents have separate jobs, not one global precedence ladder:
 
-Treat this repo as an existing-project change, not a greenfield scaffold. Reuse the current Xcode project, scheme, targets, and any existing models or utilities unless a task explicitly requires restructuring.
+- `docs/initial_description.txt` owns accepted product behavior and scope.
+- `docs/CURRENT.md` owns drift-prone working-tree and validation state.
+- `docs/TESTING.md` owns validation, fixture, permission, and evidence rules.
+- `PLANS.md` owns Work Card policy; active Work Cards contain only substantial
+  workstream deltas and decisions.
 
-## Product Brief
+Direct user instructions control the current task. Within each document's
+domain, follow its owning document and verify implementation claims against the
+working tree and fresh evidence. Historical plans and reports are context, not
+current instructions.
 
-MathPDF is a native PDF reader for Apple platforms aimed at people who write math inside PDF annotations. The key behavior is:
+## Outcome
 
-- Annotation note contents remain plain text inside the PDF.
-- When note text contains supported math notation, the app renders that math for reading comfort.
-- Rendering is an enhanced view over interoperable PDF data, not a proprietary annotation format.
+Ship a minimal, native PDF reader for mathematical annotation work:
 
-The intended reading workflow from the current description:
+- PDF annotation contents remain interoperable plain text.
+- MathPDF renders supported TeX for reading and falls back to readable source.
+- PDF viewing, navigation, annotation editing, saving, and interoperability are
+  trustworthy enough to replace Preview for the documented workflow.
+- The PDF stays visually dominant; avoid knowledge-management feature creep or
+  custom chrome that duplicates native macOS behavior.
 
-- Open a PDF and show a polished document view.
-- Provide a sidebar with `Table of Contents` and `Notes`.
-- Support highlights with attached notes and box-style note annotations.
-- Opening a note from the document or sidebar should reveal it in context.
-- Notes stay editable as plain text.
+Treat changes as existing-project work. Preserve the Xcode project, `MathPDF`
+scheme, targets, and established architectural boundaries. Restructure them
+only when the user explicitly requests it or an active Work Card identifies a
+concrete incompatibility with the requested outcome.
 
-Math-specific constraints from the current description:
+## Durable Constraints
 
-- Support common MathJax-style delimiters and broadly compatible math syntax.
-- Favor forgiving rendering over strict parsing.
-- On parse/render failure, show readable raw text rather than noisy errors.
-- Live preview while typing is not required unless the product description changes.
-
-Per-document macro constraints:
-
-- Each PDF may define its own math preamble or macros.
-- The preamble is scoped to the document, not to the user globally.
-- The preamble should be editable from an inspector-style UI.
-- The preamble should travel with the PDF through metadata so compatible viewers can read it.
-
-Design constraints:
-
-- The app should feel minimal, tasteful, native, and uncluttered.
-- Math readability is the value add; avoid feature creep that turns the app into a general-purpose knowledge manager.
-
-## Source Hierarchy
-
-Use this order when instructions conflict:
-
-1. Direct user instructions in the current conversation.
-2. [docs/initial_description.txt](/Users/linzihong/Documents/Development/Xcode/MathPDF/docs/initial_description.txt)
-3. This `AGENTS.md`
-4. [docs/CURRENT.md](/Users/linzihong/Documents/Development/Xcode/MathPDF/docs/CURRENT.md)
-5. `PLANS.md` and plan-specific docs created for a task
-6. Existing code and tests
-
-When a product decision is not settled in the description, record it as an explicit assumption in the relevant plan or ask the user if it affects architecture or compatibility.
-
-## Repo Map
-
-- `MathPDF/`: app code.
-- `MathPDFTests/`: unit and logic tests using Swift Testing.
-- `MathPDFUITests/`: UI and workflow tests with XCTest.
-- `docs/`: product notes and supporting design material.
-- `docs/CURRENT.md`: short handoff note for the active repository state.
-- `docs/plans/`: compact Work Cards plus historical ExecPlans.
-- `docs/plans/EXECPLAN_INDEX.md`: master index of checked-in Work Cards and historical plans.
-- [PLANS.md](/Users/linzihong/Documents/Development/Xcode/MathPDF/PLANS.md): required format and maintenance rules for Work Cards. The repo migrated from long ExecPlans to compact Work Cards on 2026-05-02.
-
-## Working Rules
-
-- Stay CLI-first. Prefer `xcodebuild` for listing schemes, building, testing, and any build-for-testing style loop.
-- A cleaner generator such as Tuist is optional, not the default.
-- If XcodeBuildMCP is available in a future session, use it once scheme inspection, launch automation, screenshots, logs, or UI interaction become important enough that shell commands alone are no longer efficient.
-- Keep UI code separate from PDF parsing, annotation extraction, math detection, math rendering, and metadata persistence.
-- Prefer testable services and models over putting document logic directly in SwiftUI views.
-- Preserve interoperability: do not introduce a custom note storage format when plain-text PDF annotations are sufficient.
-- Treat graceful fallback as a feature. Broken math should degrade to readable text.
-- Favor additive, reversible changes. For risky migrations, keep old and new paths side by side until behavior is validated.
-- If a change touches document format, annotation semantics, or metadata persistence, add or update tests and document the compatibility impact.
-- Reuse existing navigation patterns, shared utilities, and models when they already exist.
-- Keep compatibility intact across supported Apple platforms. Right now the checked-in project is macOS-only, so do not accidentally hard-code assumptions that would make later Apple-platform expansion harder without explicit product direction.
-
-## Architecture Direction
-
-The codebase is still near the Xcode template, so new work should establish clean boundaries early.
-
-- UI layer: document window, sidebar, inspector, annotation editing surfaces, and view state.
-- Domain layer: annotation discovery, note indexing, math-fragment detection, preamble resolution, and fallback decisions.
-- Integration layer: PDFKit or equivalent document integration, metadata read/write, export/save coordination.
-- Rendering layer: math rendering from plain-text note content plus per-document preamble context.
-
-Avoid collapsing these concerns into a single `ContentView` replacement.
-
-## Implementation Priorities
-
-- Build a real PDF reading workflow before polishing secondary preferences.
-- Make note discovery and contextual navigation reliable before optimizing advanced rendering cases.
-- Keep the math rendering pipeline observable and debuggable so raw text fallback is easy to reason about.
-- Treat per-document preamble persistence as part of the core feature set, not a later cosmetic addition.
+- Keep UI, PDF/annotation integration, domain logic, and math rendering
+  separated. Prefer testable services over document logic in SwiftUI views.
+- Plain-text annotation contents are authoritative. Do not introduce a
+  proprietary note format or a companion `/Text` annotation for a highlight.
+- Preserve or create standards-valid annotation relationships on disk. MathPDF
+  may suppress PDFKit popup presentation in memory, but saved output must not
+  contain duplicate or orphaned annotations.
+- Any implementation change that can alter serialized PDF annotation semantics
+  or metadata requires semantic round-trip tests. Record its compatibility
+  impact in the active Work Card, or in `docs/decisions/` when the decision is
+  durable. Never weaken a failing preservation test merely because PDFKit
+  produced the loss.
+- Broken or unsupported TeX must remain readable. Document macros are scoped to
+  the PDF and stored in the documented metadata marker.
+- Use native macOS document, toolbar, sidebar, inspector, menu, keyboard,
+  accessibility, undo, and window conventions by default. Depart from one only
+  when the documented workflow requires behavior it cannot provide, and record
+  the reason in the active Work Card.
 
 ## Validation
 
-Use real commands that match this repo:
+Follow [`docs/TESTING.md`](docs/TESTING.md). Use the narrowest check that proves
+the changed contract, then expand in proportion to risk.
 
-- Build: `xcodebuild -project MathPDF.xcodeproj -scheme MathPDF -derivedDataPath .build/SignedDerivedData build`
-- Test: `xcodebuild -project MathPDF.xcodeproj -scheme MathPDF -derivedDataPath .build/SignedDerivedData test`
-- Build and launch helper: `scripts/build-and-launch.sh`
+```sh
+xcodebuild -project MathPDF.xcodeproj -scheme MathPDF \
+  -derivedDataPath .build/SignedDerivedData \
+  CODE_SIGN_IDENTITY=- CODE_SIGN_STYLE=Manual DEVELOPMENT_TEAM= \
+  PROVISIONING_PROFILE_SPECIFIER= build
+xcodebuild -project MathPDF.xcodeproj -scheme MathPDF \
+  -derivedDataPath .build/SignedDerivedData \
+  CODE_SIGN_IDENTITY=- CODE_SIGN_STYLE=Manual DEVELOPMENT_TEAM= \
+  PROVISIONING_PROFILE_SPECIFIER= -only-testing:MathPDFTests test
+scripts/build-and-launch.sh --signed --build-only
+```
 
-Validation defaults:
+Installed Build macOS Apps skills supplement this repository's workflow with
+generic command selection, debugging, and failure classification. When their
+guidance differs from this file or `docs/TESTING.md`, follow the repository
+rules. Reuse `scripts/build-and-launch.sh`; do not create a competing build/run
+entrypoint or Codex Run action unless the user explicitly requests one.
 
-- If a future Codex session starts in a restricted sandbox by mistake, remind the user to grant full filesystem and app-launch access for this project before attempting manual validation or signed launch workflows.
-- Use signed builds by default for builds, tests, launches, and manual validation.
-- Use `scripts/build-and-launch.sh --signed` for normal app validation.
-- Use `scripts/build-and-launch.sh --unsigned` only for narrow debugging experiments that explicitly need an unsigned comparison.
-- Add `--build-only` when you need to inspect the built `.app` or launch it manually.
-- The signed app target must keep `ENABLE_OUTGOING_NETWORK_CONNECTIONS = YES`. Without the resulting `com.apple.security.network.client` entitlement, the sandboxed `WKWebView` renderer crashes its `WebContent` and `Networking` helper processes even for local `loadHTMLString` note content.
-- Annotation authoring and save-to-document workflows require `ENABLE_USER_SELECTED_FILES = readwrite`; do not regress that to `readonly` once editing ships.
-- Do not reintroduce a persistent `CODE_SIGNING_ALLOWED = NO` Xcode build-setting override just to get an unsigned build; that contaminates plain `xcodebuild` products and obscures signed-versus-unsigned comparisons.
+Required build and test validation must use signed products. A one-off unsigned
+build may be used only as an explicitly labeled diagnostic and does not satisfy
+a validation gate. Keep the app sandbox's outgoing-network and user-selected
+read/write entitlements; the bundled WebKit renderer and document editing depend
+on them. Do not persist `CODE_SIGNING_ALLOWED = NO` in project settings, schemes,
+or scripts.
 
-Use a small trustworthy loop after each change. Run the narrowest command that proves the touched contract, then expand only as needed:
+Signed `xcodebuild` commands usually require out-of-sandbox execution on this
+machine so the signing process can use the necessary system and keychain
+resources. If a required signed build or test fails inside the agent sandbox
+with signing, keychain, or permission evidence, rerun the same command with
+out-of-sandbox permission. Do not replace the required signed check with an
+unsigned build.
 
-- Pure logic work: run the smallest relevant signed unit-test invocation, for example `xcodebuild -project MathPDF.xcodeproj -scheme MathPDF -derivedDataPath .build/SignedDerivedData -only-testing:MathPDFTests test`.
-- View-only edits: build first, then launch the signed app and exercise the changed UI path manually.
-- Project or integration changes: run a full signed scheme build, then tests if the build passes.
-- User-visible workflow changes: pair the narrowest automated check with a manual product check in the running signed app.
-- For UI-test iteration, first prove the target compiles with `build-for-testing` before running the test bundle.
-- Do not leave template placeholder tests in place once a target gains real workflow coverage. Remove them or replace them with meaningful checks.
+For changes observable through the app UI, a build alone does not satisfy the
+GUI validation gate. When approved and the desktop is available, exercise the
+changed path in a visible app, inspect it, and quit every MathPDF instance. If
+GUI execution is not approved or the desktop is unavailable, report that gate
+as unverified; do not substitute a build or unit-test pass for it. UI tests
+require assertions, stable accessibility identifiers, deterministic fixtures,
+and explicit application termination.
 
-## Product Validation
+## Fixture and Permission Invariant
 
-Building is necessary but not sufficient. For MathPDF, validation should prove user-visible reader behavior whenever a change affects product flow.
+`TestPDFs/` contains read-only source material, not launch fixtures. Never pass
+a GUI-facing PDF path inside `TestPDFs/`, this checkout, or any other Documents
+directory to MathPDF, Preview, XCTest, `open`, or GUI automation. This does not
+restrict CLI tools from reading the checkout or source PDFs. Derive a short
+realistic fixture with CLI tools, place it under `/tmp/MathPDF-Fixtures`, resolve
+its launch path under `/private/tmp/MathPDF-Fixtures`, and launch only that copy
+or the documented debug-only in-memory fixture. Never edit a supplied PDF in
+place.
 
-- Use `pdfs for testing/ell_curves.pdf` as the default manual validation fixture unless a task needs a different sample.
-- For reader-shell and PDF-loading changes, prove the PDF opens and the document window stays usable.
-- For sidebar and note-discovery changes, prove `Table of Contents` and `Notes` behave correctly and selecting a note reveals it in context.
-- For note-editing changes, prove note text stays plain text and persists through the intended save path.
-- For math-rendering changes, prove valid math becomes more readable and broken math falls back to readable raw text.
-- For metadata or preamble changes, prove document scope and PDF round-tripping remain intact.
+A permission prompt is an immediate stop signal. Before launching a GUI
+validation route, record its expected first observable state; failure to reach
+that state within 30 seconds is also a stop signal. Follow the bounded recovery
+protocol in `docs/TESTING.md`: terminate and inspect once, retry at most once,
+then report the gate unverified. Never wait for an absent user, alter TCC, or
+broaden Documents access.
 
-Standard manual loop for user-visible changes:
+The primary agent owns this stop decision. Any delegated validation prompt must
+repeat the safe-fixture boundary, the 30-second signal, the one-retry limit, and
+the requirement to report back instead of waiting.
 
-- Launch the signed app with a representative PDF, usually `scripts/build-and-launch.sh --signed "pdfs for testing/ell_curves.pdf"`.
-- Exercise the changed workflow in the running app.
-- Capture a screenshot of the app window with the macOS window-capture skill, for example `/Users/linzihong/.codex/skills/macos-window-capture/scripts/capture_app_window.sh --app "MathPDF" --output /tmp/mathpdf-debug/validation.png`.
-- Inspect the screenshot before reporting success.
+## Project Records
 
-UI test rules:
-
-- Every `XCUIApplication` that a test launches must be terminated explicitly.
-- Prefer deterministic launch arguments or environment variables such as `MATHPDF_OPEN_DOCUMENT` over driving `NSOpenPanel`.
-- Add stable accessibility identifiers before depending on UI assertions.
-- A screenshot-only UI test is not enough; it still needs a concrete assertion.
-
-## Documentation Rules
-
-- For any task expected to last more than a small, single-file edit, create or update a compact Work Card that follows [PLANS.md](/Users/linzihong/Documents/Development/Xcode/MathPDF/PLANS.md).
-- Store checked-in Work Cards under [docs/plans/](/Users/linzihong/Documents/Development/Xcode/MathPDF/docs/plans).
-- Whenever you create, supersede, pause, or complete a Work Card, update [docs/plans/EXECPLAN_INDEX.md](/Users/linzihong/Documents/Development/Xcode/MathPDF/docs/plans/EXECPLAN_INDEX.md) in the same change. Future sessions should be able to discover plan relationships from the index alone.
-- Keep [docs/CURRENT.md](/Users/linzihong/Documents/Development/Xcode/MathPDF/docs/CURRENT.md) short and current whenever the repository is left with unfinished active work.
-- When product-facing behavior changes, update [docs/initial_description.txt](/Users/linzihong/Documents/Development/Xcode/MathPDF/docs/initial_description.txt) or add a more structured product doc in `docs/` as part of the same work.
-- When reporting work, always include whether the task was treated as greenfield or existing-project, the exact scheme used, the simulator used or an explicit statement that none was used, and the smallest validation steps actually run.
+- For work that materially changes product behavior, crosses architectural
+  boundaries, or will span sessions, follow [`PLANS.md`](PLANS.md): create or
+  update a Work Card under `docs/plans/`, and update
+  [`docs/plans/WORK_CARD_INDEX.md`](docs/plans/WORK_CARD_INDEX.md) when the card is
+  created or its lifecycle status changes.
+- Keep `docs/CURRENT.md` short and factual when active work remains.
+- Update the product description when accepted product-facing behavior changes,
+  not merely for an experimental working-tree implementation.
+- In every implementation completion report or durable work handoff, state the
+  `MathPDF` scheme, that the change was made in the existing macOS project with
+  no simulator, and the exact validation completed and left unverified.

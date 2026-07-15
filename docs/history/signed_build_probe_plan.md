@@ -1,8 +1,13 @@
 # Signed Debug Build Probe
 
+> **Historical and non-operational.** This completed signing investigation
+> preserves evidence only. Use `docs/TESTING.md` for current signed commands and
+> evidence requirements.
+
 This ExecPlan is a living document. The sections `Progress`, `Surprises & Discoveries`, `Decision Log`, and `Outcomes & Retrospective` must be kept up to date as work proceeds.
 
-This document must be maintained in accordance with [PLANS.md](/Users/linzihong/Documents/Development/Xcode/MathPDF/PLANS.md).
+This historical document was originally maintained under
+[PLANS.md](../../PLANS.md).
 
 ## Purpose / Big Picture
 

@@ -1,8 +1,32 @@
 # MathPDF Testing Rules
 
-These rules are part of the product contract. They exist to prevent test runs
-from becoming disruptive, to keep user PDFs safe, and to make regressions prove
-the behavior that a reader actually exposes.
+These rules define MathPDF's validation contract. They exist to prevent test
+runs from becoming disruptive, to keep user PDFs safe, and to make regressions
+prove the behavior that a reader actually exposes.
+
+This file is authoritative for MathPDF validation. Installed Build macOS Apps
+skills are supplemental: use them to choose narrow commands, classify failures,
+and guide focused reruns, but do not let generic guidance weaken the rules below
+or create a second build/run workflow. `scripts/build-and-launch.sh` is the
+existing project entrypoint.
+
+## Signed Execution
+
+Required build and test evidence uses locally signed products with the app's
+real sandbox entitlements. The standard ad-hoc signed test shape is:
+
+```sh
+xcodebuild -project MathPDF.xcodeproj -scheme MathPDF \
+  -derivedDataPath .build/SignedDerivedData \
+  CODE_SIGN_IDENTITY=- CODE_SIGN_STYLE=Manual DEVELOPMENT_TEAM= \
+  PROVISIONING_PROFILE_SPECIFIER= -only-testing:MathPDFTests test
+```
+
+Signed `xcodebuild` usually needs out-of-sandbox permission on this machine to
+reach signing and keychain resources. If the same command fails inside the
+agent sandbox with signing, keychain, or permission evidence, rerun it outside
+the sandbox. An unsigned build is diagnostic evidence only and never satisfies
+a required build, test, renderer, entitlement, or release gate.
 
 ## Local Interaction Policy
 
@@ -27,17 +51,49 @@ the behavior that a reader actually exposes.
 
 ## Fixture Safety
 
-- `TestPDFs/` is untracked user material. Never modify, overwrite, save, or
-  annotate those files in place.
+- `TestPDFs/` is untracked, read-only source material. It may be inspected or
+  excerpted with non-GUI CLI tools, but it is never a launch fixture. Never pass
+  a path inside `TestPDFs/`, the checkout, or another Documents directory to
+  MathPDF, Preview, XCTest, `open`, or GUI automation.
+- Never modify, overwrite, save, or annotate a supplied PDF in place.
 - Manual fixtures live under `/tmp/MathPDF-Fixtures`. Create them by copying or
   excerpting realistic supplied PDFs, then add narrowly chosen annotations,
   outlines, metadata, rotations, or crop boxes to exercise the desired case.
 - Prefer short, realistic fixtures over blank synthetic pages for visual and
   manual product checks. Blank generated PDFs remain appropriate for isolated
   unit tests where page content is irrelevant.
-- Opening a validation fixture must not request broad Documents-folder access.
-  Confirm the document URL is under `/private/tmp/MathPDF-Fixtures` before
-  editing or saving.
+- Resolve symlinks and confirm the document URL begins with
+  `/private/tmp/MathPDF-Fixtures/` before any GUI launch, edit, or save.
+- `scripts/build-and-launch.sh` enforces that resolved boundary when given a PDF
+  path. Do not bypass the guard with direct `open`, Preview, or another launcher.
+
+## Permission-Stall Escape Protocol
+
+No local approval should be assumed during unattended work. Apply this protocol
+to app launch, UI automation, Computer Use, Open panels, and document opening;
+ordinary builds have their own progress and timeout expectations.
+
+1. Before launch, record the expected first observable state and verify every
+   GUI-facing document path is under `/private/tmp/MathPDF-Fixtures/` or uses
+   the debug-only in-memory fixture.
+2. If the expected state does not appear within 30 seconds, or a permission
+   sheet, `Running Background`, TCC denial, sandbox denial, or Open panel
+   appears, terminate the app/test immediately. A pending prompt counts as a
+   failure, not progress.
+3. Inspect the path, process state, visible UI, and relevant log output once.
+   Do not enter an unbounded wait/poll loop.
+4. If a path escaped the fixture boundary, recreate the fixture under `/tmp`
+   and retry once. If the path was already safe, only one clean relaunch is
+   allowed after removing stale app instances or restoration state.
+5. If the retry stalls, abandon that validation route, record the precise
+   unverified gate, and continue with non-GUI evidence where useful. Never wait
+   for an absent user, alter TCC settings, request broad Documents access, or
+   repeatedly relaunch the same blocked command.
+
+The primary agent remains responsible for elapsed time and cleanup even when a
+subagent or automation owns the immediate check. Delegated prompts must include
+the fixture boundary, 30-second signal, one-retry limit, expected evidence, and
+return-on-blocker instruction.
 
 ## Required Contracts
 
@@ -46,10 +102,10 @@ the behavior that a reader actually exposes.
   reveal an offscreen target.
 - One PDF annotation produces one visible reading affordance. A test must fail
   if PDFKit's popup and MathPDF's popover appear together.
-- Standalone `/Text` notes remain distinct from nearby highlights. `/Popup`
-  annotations do not become duplicate sidebar notes. Saved output deliberately
-  normalizes PDFKit popup companions away while retaining note text on the
-  owning annotation; no orphan popup may survive serialization.
+- Standalone `/Text` notes remain distinct from nearby highlights. Highlight
+  notes store text on the owning annotation and round-trip a reciprocal
+  `/Popup` and `/Parent` graph. Popup companions do not become sidebar notes,
+  and no orphan popup or duplicate in-app surface may survive.
 - Editing remains plain text, is undoable, does not invent companion `/Text`
   annotations, and survives PDF reserialization.
 - The versioned MathPDF preamble marker in standard PDF Keywords imports from
@@ -63,8 +119,8 @@ the behavior that a reader actually exposes.
 - Tests assert product behavior, not screenshots or implementation details.
 - Screenshots supplement assertions and must be visually inspected.
 - PDF persistence tests reparse the output and compare semantic page,
-  annotation, relationship-or-documented-normalization, content, and metadata
-  state rather than PDF bytes.
+  annotation, reciprocal relationship, content, and metadata state rather than
+  requiring byte equality after an edit. A no-op snapshot remains byte-identical.
 - PDFKit, AppKit, and WebKit mutation tests run on the main actor. WebKit probes
   run serially and use signed hosts with the required sandbox entitlements.
 - Never use arbitrary sleeps when a notification, publisher, accessibility
@@ -109,7 +165,7 @@ the loss; PDFKit output is the product's persisted output.
 
 ## Standard Validation Order
 
-1. Run the narrowest relevant signed unit tests.
+1. Run the narrowest relevant signed unit tests, using the command shape above.
 2. Build the UI-test bundle with `build-for-testing` when UI test code changed;
    do not execute it locally without approval.
 3. Run `scripts/build-and-launch.sh --signed --build-only` and verify the deep

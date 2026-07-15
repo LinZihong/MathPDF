@@ -1,8 +1,13 @@
 # Signed Renderer Root Cause And Fix
 
+> **Historical and non-operational.** This completed renderer investigation
+> preserves evidence only. Its old fixture paths and unsigned commands are not
+> current instructions.
+
 This ExecPlan is a living document. The sections `Progress`, `Surprises & Discoveries`, `Decision Log`, and `Outcomes & Retrospective` must be kept up to date as work proceeds.
 
-This document must be maintained in accordance with [PLANS.md](/Users/linzihong/Documents/Development/Xcode/MathPDF/PLANS.md).
+This historical document was originally maintained under
+[PLANS.md](../../PLANS.md).
 
 ## Purpose / Big Picture
 
@@ -24,7 +29,10 @@ This is an existing-project debugging and bug-fix slice. PDF annotation compatib
   Evidence: `MathPDF/MathNoteRendering.swift` reads `katex.min.css`, strips `fonts/`, and passes the app bundle resource directory as the `baseURL` for `loadHTMLString`.
 
 - Observation: the signed-versus-unsigned split is already strong enough that product debugging cannot rely on only the unsigned helper flow.
-  Evidence: `docs/plans/signed_build_probe_plan.md` and `docs/xcode_run_weirdness.md` both record that a genuinely signed repo-local `xcodebuild` product reproduces the blank-renderer failure while the unsigned build renders the same note.
+  Evidence: `docs/history/signed_build_probe_plan.md` and
+  `docs/history/xcode_run_weirdness.md` both record that a genuinely signed
+  repo-local `xcodebuild` product reproduced the blank-renderer failure while
+  the unsigned build rendered the same note.
 
 - Observation: the signed failure is not specific to KaTeX, font files, inline JavaScript, or note-height messaging.
   Evidence: signed runs of the `plain-text`, `inline-js`, `inline-js-height`, `katex-no-fonts`, and full `production` experiments all produced the same blank note area while diagnostics reported `webContentTerminated: true`.

@@ -1,73 +1,61 @@
 # Current State
 
-Last updated: 2026-07-13
+Last updated: 2026-07-14
 
-The Preview-replacement overhaul is implemented as an existing-project change.
-Final unlocked-desktop UI validation remains open.
-The exact scheme is `MathPDF`; this is a macOS app and no simulator is used.
+This file records current implementation and validation state only. Product
+requirements live in `docs/initial_description.txt`; validation rules live in
+`docs/TESTING.md`; the active delta lives in
+`docs/plans/preview_replacement_overhaul.md`.
 
-What works:
+The scheme is `MathPDF`. This is an existing macOS project; no simulator is
+used.
 
-- Native per-document windows with a standard-height unified toolbar and a quiet title menu for
-  Table of Contents or Highlights and Notes,
-  always-visible PDF search with result navigation, direct page entry, grouped
-  zoom controls, printing, Save As, and Revert.
-- Highlight creation, box-note creation, plain-text editing, undo, and native
-  document autosave.
-- One annotation has one in-app reading affordance. MathPDF intercepts PDFKit
-  annotation clicks before PDFKit can also open a popup, while drag selection is
-  handed back to PDFKit.
-- On save, PDFKit popup companions are normalized out of a serialized copy
-  because PDFKit does not reliably preserve their `/Popup` and `/Parent`
-  relationship. The owning highlight or text annotation retains the plain-text
-  note, so other readers receive one interoperable annotation instead of an
-  orphaned duplicate; the live document is not mutated by serialization.
-- Direct annotation clicks preserve the viewport. Sidebar selection preserves
-  scale, minimally reveals offscreen annotations, updates the page counter, and
-  preserves truthful Back history.
-- Short notes use an anchored native popover; long or constrained notes use the
-  trailing inspector. Existing notes open read-first; only New Note or explicit
-  Edit places focus in the plain-text editor.
-- Inspector destinations are mutually exclusive, note-list rows stay spatially
-  stable, selected notes support Delete, and temporary note placement uses a
-  crosshair with Escape and missed-click cancellation.
-- Bundled KaTeX renders common delimiters plus document-scoped `\newcommand`
-  aliases, simple parameterized commands, and `\DeclareMathOperator`. Failures
-  stay readable as raw text.
-- The preamble is stored as a versioned Base64 marker in standard PDF Keywords,
-  preserving unrelated keywords and importing both PDFKit- and externally-
-  authored metadata.
-- Signed local builds use ad-hoc “Sign to Run Locally” signing and verify the
-  sandbox, network-client, and user-selected read/write entitlements.
+## Committed and validated baseline
 
-Validation state:
+- `eaf9ce1` is the last committed checkpoint.
+- Native per-document windows provide outlines, Highlights and Notes, search,
+  page entry, grouped zoom controls, printing, Save As, Revert, annotation
+  authoring, undo, and document autosave.
+- Direct annotation activation preserves the viewport. Sidebar navigation
+  preserves scale, minimally reveals offscreen targets, updates the page field,
+  and maintains truthful Back history.
+- MathPDF presents one in-app reading surface per note. Existing notes open
+  read-first in an anchored popover or trailing inspector; explicit Edit and New
+  Note enter plain-text editing.
+- Bundled KaTeX supports common delimiters, document-scoped aliases, simple
+  parameterized commands, and math operators, with readable raw-text fallback.
+- The document preamble uses a versioned marker in standard PDF Keywords while
+  preserving unrelated metadata.
+- The checkpoint passed 25 out-of-sandbox signed unit/integration tests. That
+  evidence covers the checkpoint's then-current popup-normalization policy, not
+  the active reciprocal-popup delta.
+- A signed manual pass on
+  `/tmp/MathPDF-Fixtures/58x-annotations-short.pdf` verified one-popover
+  ownership, direct-click viewport stability, sidebar page/zoom navigation,
+  Back, and the native Print menu. All launched MathPDF/test processes were
+  terminated afterward.
 
-- Twenty-five signed unit/integration tests pass, including PDFKit
-  page/scale/Back navigation, multiline highlight geometry, edge-clamped note
-  placement, exact annotation identity, document isolation, adversarial
-  semantic PDF preservation, popup normalization, and runtime
-  renderer-injection checks.
-- The UI-test target compiles. Execution was explicitly approved and moved to
-  `/tmp/MathPDF-DerivedData`, with a debug-only in-memory fixture window that
-  bypasses the document Open panel. The final run could not activate because
-  the Mac locked after the user left; XCTest recorded `Running Background`.
-  This is an environmental block, not a passing result.
-- Computer Use validation passed on
-  `/tmp/MathPDF-Fixtures/58x-annotations-short.pdf`, a seven-page excerpt of a
-  supplied research PDF with realistic annotations and document macros.
-- Direct page activation produced exactly one popover while page 1 and 208%
-  zoom remained unchanged. Sidebar navigation to page 3 preserved 195% zoom,
-  updated the page field, and Back returned to page 1. The native File menu
-  contains Print.
-- All MathPDF and UI-test processes were terminated after testing.
+## Working-tree changes, not yet validated
 
-User material:
+- The working tree adds reciprocal `/Popup` and `/Parent` persistence through
+  PDFKit's incremental append path, post-save semantic validation, byte-identical
+  no-op snapshots, per-revision snapshot caching, and read-only handling for
+  encrypted, signed, non-commentable, or otherwise unsupported edits.
+- This interoperability delta is implemented but uncommitted and has not passed
+  a fresh signed test run. Do not describe it as validated or shipped.
 
-- `TestPDFs/` is untracked and was not modified. Manual fixtures belong under
-  `/tmp/MathPDF-Fixtures`; never open the originals for a validation edit.
+## Open validation gates
 
-Next unlocked-desktop action:
+- The UI-test target compiles, but the last approved run reached `Running
+  Background` after the Mac locked; no product assertion ran. When the desktop
+  is unlocked, run the three UI tests from `/tmp/MathPDF-DerivedData`.
+- Visually inspect a research excerpt under `/tmp/MathPDF-Fixtures`, obtain the
+  independent design ship verdict, and quit every MathPDF instance.
+- Apply `docs/TESTING.md` exactly. `TestPDFs/` remains read-only source material
+  and is never a GUI launch target.
 
-- Run the three MathPDF UI tests from `/tmp/MathPDF-DerivedData`, visually check
-  the active research-PDF window after the final toolbar/search changes, obtain
-  the independent design ship verdict, and quit every MathPDF window.
+## Next safe action
+
+Run the focused signed interoperability tests and then the full signed unit
+suite, outside the agent sandbox when signing resources require it. Do not begin
+the remaining GUI gates until the desktop is unlocked and execution is approved.

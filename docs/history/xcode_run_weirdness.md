@@ -1,5 +1,9 @@
 # Xcode Run Weirdness
 
+> **Historical and non-operational.** Superseded by the signed-renderer fix and
+> current testing rules. Do not follow commands or practical guidance in this
+> report. Use `docs/TESTING.md` and `scripts/build-and-launch.sh` instead.
+
 Observed on 2026-04-06 while validating the KaTeX renderer migration.
 
 ## Summary

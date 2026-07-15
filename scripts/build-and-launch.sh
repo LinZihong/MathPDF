@@ -16,6 +16,8 @@ usage() {
   cat >&2 <<EOF
 Usage: $SCRIPT_NAME [--signed|--developer-signed|--unsigned] [--build-only] [--renderer-experiment name] [--renderer-diagnostics] [path-to-pdf]
 
+Any PDF passed for GUI validation must resolve under /private/tmp/MathPDF-Fixtures/.
+
 Defaults:
   --signed     Sign to run locally without requiring an Apple Development certificate
   --developer-signed  Use the project's Apple Development signing settings
@@ -97,6 +99,11 @@ DOCUMENT_PATH="${DOCUMENT_PATH:-${MATHPDF_OPEN_DOCUMENT:-}}"
 if [[ -n "$DOCUMENT_PATH" ]]; then
   if ! DOCUMENT_PATH="$(realpath "$DOCUMENT_PATH" 2>/dev/null)"; then
     echo "Document path does not exist: $DOCUMENT_PATH" >&2
+    exit 1
+  fi
+  if [[ "$DOCUMENT_PATH" != /private/tmp/MathPDF-Fixtures/* ]]; then
+    echo "Refusing unsafe GUI fixture path: $DOCUMENT_PATH" >&2
+    echo "Derive a copy under /tmp/MathPDF-Fixtures and launch that resolved copy instead." >&2
     exit 1
   fi
 fi

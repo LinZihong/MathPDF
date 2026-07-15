@@ -1,6 +1,10 @@
 # Annotation Authoring And Inline Note Popovers
 
-Status: active
+> **Historical and non-operational.** This plan was superseded by
+> `docs/plans/preview_replacement_overhaul.md`. Do not execute commands or infer
+> current product, fixture, signing, or validation rules from this file.
+
+Status: superseded
 Last updated: 2026-05-02
 Context: existing-project change
 Scheme: MathPDF

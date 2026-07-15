@@ -1,5 +1,9 @@
 # Fix MathJax Note Rendering Fallback Regression
 
+> **Historical and non-operational.** This paused MathJax investigation was
+> overtaken by the current KaTeX implementation. Do not execute its commands or
+> treat its fixture and renderer assumptions as current.
+
 This ExecPlan is a living document. The sections `Progress`, `Surprises & Discoveries`, `Decision Log`, and `Outcomes & Retrospective` must be kept up to date as work proceeds.
 
 This document must be maintained in accordance with [PLANS.md](../../PLANS.md).
