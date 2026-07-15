@@ -160,6 +160,11 @@ used.
 
 ## Open validation gates
 
+- The explicitly required independent Computer Use design interaction verdict
+  remains `UNVERIFIED`: three bounded reviewer attempts stalled before returning
+  visible state. Each attempt was interrupted and cleaned up. Independent static
+  review is `VISUAL PASS`, and signed XCUITest covers the interaction workflows,
+  but neither is being mislabeled as the missing Computer Use evidence.
 - Idle autosave, Save As, Revert, write-failure UI, external-file conflicts,
   accessibility configurations, and largest-document responsiveness remain
   explicit extended manual gates in `docs/TESTING.md`.
@@ -168,6 +173,8 @@ used.
 
 ## Next safe action
 
-Commit the completed existing-project overhaul. Keep using the production app
-host and default Xcode signing; use `MathPDFTestHost` only if that normal route
-becomes blocked again.
+Retry only the independent Computer Use product review when that channel can
+return visible state within the documented bound; no product rerun or permission
+change is justified merely to force it. Keep using the production app host and
+default Xcode signing; use `MathPDFTestHost` only if that normal route becomes
+blocked again.

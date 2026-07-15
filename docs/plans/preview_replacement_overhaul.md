@@ -1,6 +1,6 @@
 # Preview-Replacement Reader Overhaul
 
-Status: completed
+Status: active
 Last updated: 2026-07-15
 Context: existing-project change
 Scheme: MathPDF
@@ -140,8 +140,12 @@ rules.
 - [x] Confirm that Preview still receives its native affordance from the saved
       reciprocal graph.
 - [x] Inspect a `/tmp/MathPDF-Fixtures` research excerpt across the full
-      workflow, obtain the independent interactive design ship verdict, and
-      terminate every MathPDF instance.
+      workflow, obtain an independent static design ship verdict, and terminate
+      every MathPDF instance.
+- [ ] Obtain the explicitly required independent Computer Use interaction
+      verdict. Three bounded attempts returned no visible state; each was
+      classified `UNVERIFIED`, interrupted, and cleaned up rather than inferred
+      from screenshots or code.
 - [x] Author and check-only gatekeep the final holistic interactive-review
       prompt; retain it in `docs/FINAL_INTERACTIVE_REVIEW_PROMPT.md` until the
       signed candidate is ready.
@@ -238,6 +242,11 @@ Passed:
 
 Not yet validated:
 
+- Independent design/product interaction through Computer Use. The final static
+  evidence has `VISUAL PASS`, and XCUITest proves the workflows, but the separate
+  expert Computer Use channel has stalled on every bounded attempt without
+  returning visible state. This is an evidence limitation, not a known product
+  failure.
 - Idle autosave, Save As, Revert, close review, failure UI, external-file
   conflicts, real multi-window routing, accessibility configurations, and large-
   document responsiveness remain GUI/manual gates as defined in
