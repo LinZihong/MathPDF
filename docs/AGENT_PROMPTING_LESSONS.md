@@ -113,6 +113,45 @@ prompt, while the author remains accountable even when the check says yes.
 
 ## Examples that worked in MathPDF
 
+The following are verbatim prompts sent to independent reviewers. They are
+included as evidence of the technique, not as templates to copy mechanically.
+
+### Verbatim final visual-review prompt
+
+> Act as the senior macOS product design authority for a daily-use native PDF
+> reader, not as a checklist executor or Preview pixel-copy critic. Reassess
+> the current product holistically from the two exact post-redesign,
+> post-scroll-fix app-window screenshots below. Use view_image yourself at
+> original detail. Decide independently whether the visual design now has
+> sufficient native taste, clarity, restraint, hierarchy, and note
+> discoverability to ship today. Do not assume earlier criticisms remain true;
+> judge only current evidence. Return a crisp VISUAL PASS or VISUAL NO-PASS with
+> only material issues that would genuinely block daily use. Screenshot paths:
+> /private/tmp/MathPDF-Fixtures/final-visual/post-scroll-fix/A478DF12-BCCE-4C30-AFCF-5322EB6B2046.png
+> and
+> /private/tmp/MathPDF-Fixtures/final-visual/post-scroll-fix/C3AFC567-2CBB-468F-9BA3-D7B1614BBF85.png
+
+### Verbatim final interactive-review prompt
+
+> Use Computer Use now for the final independent interactive product verdict
+> on the already-running signed production MathPDF app with its in-memory
+> annotated-reader fixture. You are the senior macOS PDF-reader product/design
+> authority; judge the whole daily-use experience independently, not a Preview
+> pixel copy and not a checklist. Discover the sidebar modes yourself, open a
+> highlighted note from both sidebar and on-page affordance, inspect read/edit
+> continuity, recolor and Undo, toolbar/search/page controls, scroll/viewport
+> behavior, and overall native taste. The final static redesign already
+> received VISUAL PASS, but do not inherit that verdict. Expected first visible
+> state: one MathPDF window titled Untitled with a 3-page fixture, within 30
+> seconds. If Computer Use does not return visible state within 30 seconds, any
+> permission/TCC/Open panel appears, or the route stalls, stop and return
+> UNVERIFIED—do not use AppleScript/System Events, do not broaden permissions,
+> do not infer from code or screenshots. Do not save or open any file path.
+> Return INTERACTIVE PASS or INTERACTIVE NO-PASS with only material evidence,
+> then close MathPDF and verify cleanup. This prompt follows the previously
+> check-only-gatekept final review contract in
+> docs/FINAL_INTERACTIVE_REVIEW_PROMPT.md.
+
 ### A holistic visual brief found defects that were never named
 
 The first independent visual reviewer was set up as a senior macOS product
