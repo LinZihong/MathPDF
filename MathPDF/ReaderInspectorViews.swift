@@ -1,7 +1,12 @@
 import SwiftUI
 
 struct PreambleInspectorView: View {
-    @ObservedObject var document: MathPDFDocument
+    @ObservedObject var controller: ReaderDocumentController
+    let onDocumentChange: () -> Void
+
+    @Environment(\.undoManager) private var undoManager
+
+    private var document: MathPDFDocument { controller.document }
 
     var body: some View {
         let compilation = MathPreambleCompiler.compile(document.preamble)
@@ -18,7 +23,15 @@ struct PreambleInspectorView: View {
 
             Divider()
 
-            TextEditor(text: $document.preamble)
+            TextEditor(text: Binding(
+                get: { document.preamble },
+                set: { value in
+                    guard document.updatePreambleFromEditor(to: value) else { return }
+                    if undoManager?.isUndoing != true, undoManager?.isRedoing != true {
+                        onDocumentChange()
+                    }
+                }
+            ))
                 .font(.body.monospaced())
                 .padding(10)
                 .accessibilityIdentifier("preamble-editor")

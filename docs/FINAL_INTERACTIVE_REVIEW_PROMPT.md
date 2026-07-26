@@ -1,7 +1,10 @@
 # Final Interactive Product Review Prompt
 
-Status: ready, but do not run until the post-correction signed build and
-`final-review-working.pdf` exist.
+Status: historical comprehensive review contract. The final signed candidate
+was instead accepted on 2026-07-19 through the safer debug-only in-memory
+fixture after bounded visible Computer Use passes. Current evidence and any
+remaining extended gates are recorded in `docs/CURRENT.md` and
+`docs/TESTING.md`; do not rerun this file-based prompt as an active instruction.
 
 The primary agent authored this prompt. A fresh check-only gatekeeper accepted
 the first draft, but the primary agent independently found that it did not name

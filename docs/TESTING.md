@@ -153,6 +153,16 @@ return-on-blocker instruction.
   and no orphan popup or duplicate in-app surface may survive.
 - Editing remains plain text, is undoable, does not invent companion `/Text`
   annotations, and survives PDF reserialization.
+- A note editor owns a local draft and local typing-undo stack. Typing marks the
+  real document as having an editor transaction, but it must not add each
+  keystroke to the document undo stack. Committing creates exactly one document
+  mutation; undoing it restores both annotation contents and the window's clean
+  saved-baseline state. Typing back to the transaction baseline must also end
+  the pending Edited state without requiring Done.
+- Saving or autosaving with a pending note draft commits that draft once and
+  rebases the still-open editor. Later typing must remain pending and must not be
+  lost by a presentation refresh, save, focus change, or teardown. A rejected
+  commit keeps the draft visibly editable and the document pending.
 - Exercise `type -> delete -> undo delete -> edit -> undo edit`; the final undo
   must restore the text present when deletion occurred, never a stale baseline
   from before the deleted editing session.
@@ -165,6 +175,10 @@ return-on-blocker instruction.
 - Replacing the PDF document cancels the old document's asynchronous search and
   resets query, result, selection, and searching state before accepting results
   for the new document.
+- At the default window size, Command-F must present and focus a correctly
+  described native Search PDF control without requiring resize or full screen.
+  Searching, result counts, and previous/next navigation must remain usable when
+  macOS adapts or collapses toolbar items.
 - The versioned MathPDF preamble marker in standard PDF Keywords imports from
   externally authored PDFs and round-trips without removing unrelated keywords.
 - Valid macros render; malformed or unsupported TeX remains readable raw text;
@@ -190,6 +204,11 @@ return-on-blocker instruction.
   run serially and use signed hosts with the required sandbox entitlements.
 - Never use arbitrary sleeps when a notification, publisher, accessibility
   state, or delegate callback can prove completion.
+- Distinguish test-body evidence from runner completion. If every assertion is
+  reported passed but `xcodebuild` stalls while finalizing coverage or the
+  result bundle, record the assertion count and the finalization stall
+  separately; do not call the command a clean pass. A later runner stall before
+  test start adds no new product evidence.
 
 ## Headless Coverage Boundary
 
@@ -219,6 +238,9 @@ GUI/manual release gates and must never be reported as unit-tested:
   external-file conflict handling;
 - real multi-window focus, window restoration, per-window undo routing, and
   security-scoped file access;
+- the real window's Edited indicator and close review after note typing,
+  commit, local typing Undo, document Undo/Redo, autosave, and return to the
+  saved baseline;
 - event routing between text selection, annotation activation, and scrolling;
 - page-attached note-surface geometry at every window/page edge, source-passage
   avoidance, containment inside the PDF pane, and dismissal on scroll;

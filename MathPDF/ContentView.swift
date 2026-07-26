@@ -1,4 +1,5 @@
 import PDFKit
+import Combine
 import SwiftUI
 
 struct ContentView: View {
@@ -7,6 +8,9 @@ struct ContentView: View {
 
     @Environment(\.undoManager) private var undoManager
     @State private var pageField = "1"
+    @State private var isSearchPresented = false
+    @StateObject private var documentWindowState = DocumentWindowState()
+    @FocusState private var isSearchFocused: Bool
 
     var body: some View {
         NavigationSplitView {
@@ -22,19 +26,22 @@ struct ContentView: View {
                 proxy: controller.readerProxy,
                 noteForAnnotation: controller.annotationActivated,
                 capabilitiesForAnnotation: controller.capabilities,
-                onUpdateNote: updateNote,
                 onCommitNoteEdit: commitNoteEdit,
                 onDeleteNote: deleteNote,
                 onUpdateColor: updateColor,
                 onCancelTextNote: { controller.readerTool = .browse },
                 onCreateTextNote: createTextNote,
+                onCreateHighlight: createHighlight,
                 onAnnotationPresentationChanged: controller.annotationPresentationChanged,
                 enforceRuntimeAnnotationPresentation: controller.document.enforceRuntimeAnnotationPresentation
             )
         }
         .navigationSplitViewStyle(.balanced)
         .inspector(isPresented: $controller.isPreambleInspectorPresented) {
-            PreambleInspectorView(document: controller.document)
+            PreambleInspectorView(
+                controller: controller,
+                onDocumentChange: documentWindowState.recordChange
+            )
                 .inspectorColumnWidth(min: 270, ideal: 330, max: 440)
         }
         .toolbar {
@@ -46,15 +53,33 @@ struct ContentView: View {
                 onToggleTextNote: toggleTextNoteTool
             )
         }
+        .searchable(
+            text: $controller.searchText,
+            isPresented: $isSearchPresented,
+            placement: .toolbar,
+            prompt: "Search PDF"
+        )
+        .searchFocused($isSearchFocused)
+        .onSubmit(of: .search) {
+            controller.search()
+        }
+        .onChange(of: controller.searchText) { _, searchText in
+            searchTextChanged(searchText)
+        }
         .focusedSceneValue(\.pdfViewProxy, controller.readerProxy)
         .focusedSceneValue(
             \.readerCommandContext,
-            ReaderCommandContext(togglePreambleInspector: controller.togglePreambleInspector)
+            ReaderCommandContext(
+                togglePreambleInspector: controller.togglePreambleInspector,
+                focusSearch: focusSearch
+            )
         )
         .navigationTitle(fileURL?.deletingPathExtension().lastPathComponent ?? "Untitled PDF")
-        .navigationSubtitle(
-            "Page \(controller.readerProxy.pageIndex + 1) of \(max(controller.readerProxy.pageCount, 1))"
-        )
+        .navigationSubtitle(navigationSubtitle)
+        .background {
+            WindowDocumentEditedObserver(state: documentWindowState)
+                .frame(width: 0, height: 0)
+        }
         .alert(item: $controller.annotationAuthoringNotice) { notice in
             Alert(
                 title: Text(notice.title),
@@ -64,6 +89,25 @@ struct ContentView: View {
         }
         .onReceive(controller.readerProxy.$pageIndex) { pageIndex in
             pageField = String(pageIndex + 1)
+        }
+    }
+
+    private func focusSearch() {
+        isSearchPresented = true
+        DispatchQueue.main.async {
+            isSearchFocused = true
+        }
+    }
+
+    private var navigationSubtitle: String {
+        let page = controller.readerProxy.pageIndex + 1
+        let count = max(controller.readerProxy.pageCount, 1)
+        return "Page \(page) of \(count)" + (documentWindowState.isEdited ? " — Edited" : "")
+    }
+
+    private func searchTextChanged(_ searchText: String) {
+        if searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            controller.search()
         }
     }
 
@@ -83,17 +127,15 @@ struct ContentView: View {
         controller.readerTool = controller.readerTool == .textNote ? .browse : .textNote
     }
 
-    private func updateNote(_ note: AnnotationNote, contents: String) -> Bool {
-        controller.document.updateContentsDuringEditing(
+    private func commitNoteEdit(
+        _ note: AnnotationNote,
+        originalContents: String,
+        contents: String
+    ) -> Bool {
+        guard contents != originalContents else { return true }
+        return controller.document.updateContents(
             of: note.annotation,
-            to: contents
-        )
-    }
-
-    private func commitNoteEdit(_ note: AnnotationNote, originalContents: String) {
-        controller.document.commitContentsEditingTransaction(
-            of: note.annotation,
-            from: originalContents,
+            to: contents,
             undoManager: undoManager
         )
     }
@@ -121,6 +163,83 @@ struct ContentView: View {
             undoManager: undoManager
         ) else { return nil }
         return controller.annotationActivated(annotation)
+    }
+
+    private func createHighlight(
+        from selection: PDFSelection,
+        withNote: Bool
+    ) -> PDFAnnotation? {
+        if withNote {
+            return controller.addHighlightWithNote(
+                from: selection,
+                undoManager: undoManager
+            )
+        }
+        return controller.addHighlight(from: selection, undoManager: undoManager)
+    }
+}
+
+@MainActor
+final class DocumentWindowState: ObservableObject {
+    @Published private(set) var isEdited = false
+
+    private weak var window: NSWindow?
+    private var observation: NSKeyValueObservation?
+
+    func attach(to window: NSWindow?) {
+        guard self.window !== window else { return }
+        observation = nil
+        self.window = window
+        guard let window else {
+            isEdited = false
+            return
+        }
+        isEdited = window.isDocumentEdited
+        observation = window.observe(\.isDocumentEdited, options: [.new]) {
+            [weak self] _, change in
+            MainActor.assumeIsolated {
+                self?.isEdited = change.newValue ?? false
+            }
+        }
+    }
+
+    func recordChange() {
+        if let document = window?.windowController?.document {
+            document.updateChangeCount(.changeDone)
+        } else {
+            window?.isDocumentEdited = true
+        }
+    }
+}
+
+private struct WindowDocumentEditedObserver: NSViewRepresentable {
+    @ObservedObject var state: DocumentWindowState
+
+    func makeNSView(context: Context) -> DocumentEditedTrackingView {
+        DocumentEditedTrackingView(onWindowChange: state.attach)
+    }
+
+    func updateNSView(_ view: DocumentEditedTrackingView, context: Context) {
+        view.onWindowChange = state.attach
+        state.attach(to: view.window)
+    }
+}
+
+private final class DocumentEditedTrackingView: NSView {
+    var onWindowChange: (NSWindow?) -> Void
+
+    init(onWindowChange: @escaping (NSWindow?) -> Void) {
+        self.onWindowChange = onWindowChange
+        super.init(frame: .zero)
+    }
+
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) has not been implemented")
+    }
+
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        onWindowChange(window)
     }
 }
 

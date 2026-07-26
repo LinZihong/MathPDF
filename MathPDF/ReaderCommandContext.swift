@@ -2,6 +2,7 @@ import SwiftUI
 
 struct ReaderCommandContext {
     let togglePreambleInspector: () -> Void
+    let focusSearch: () -> Void
 }
 
 struct ReaderCommandContextKey: FocusedValueKey {

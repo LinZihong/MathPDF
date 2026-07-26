@@ -25,9 +25,15 @@ final class ReaderDocumentController: ObservableObject {
         self.document = document
         rebuildIndex()
 
-        document.$annotationRevision
-            .dropFirst()
-            .sink { [weak self] _ in self?.rebuildNotes() }
+        document.annotationChanges
+            .sink { [weak self] _ in
+                self?.rebuildNotes()
+                self?.objectWillChange.send()
+            }
+            .store(in: &cancellables)
+
+        document.preambleChanges
+            .sink { [weak self] _ in self?.objectWillChange.send() }
             .store(in: &cancellables)
 
         readerProxy.objectWillChange
@@ -71,6 +77,9 @@ final class ReaderDocumentController: ObservableObject {
             }
         } else if presentedNoteID == noteID {
             presentedNoteID = nil
+            if pendingPresentedNoteID == nil, selectedNoteID == noteID {
+                selectedNoteID = nil
+            }
         }
     }
 
@@ -206,7 +215,7 @@ final class ReaderDocumentController: ObservableObject {
         return addHighlight(from: selection, undoManager: undoManager)
     }
 
-    private func addHighlight(
+    func addHighlight(
         from selection: PDFSelection,
         undoManager: UndoManager?
     ) -> PDFAnnotation? {

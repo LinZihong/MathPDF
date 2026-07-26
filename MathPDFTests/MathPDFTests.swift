@@ -1675,14 +1675,18 @@ struct ReaderAnnotationOwnershipTests {
     }
 
     @Test
-    func openEditingSessionReconcilesDocumentUndoWithoutLosingFocus() {
-        var liveUpdates: [String] = []
+    func openEditingSessionPreservesPendingDraftAcrossDocumentRefresh() {
+        var pendingStates: [Bool] = []
+        var commits: [(String, String)] = []
         let session = AnnotationNoteEditingSession(
             contents: "before",
             color: AnnotationColorChoice.yellow.nsColor,
             startsEditing: true,
-            onLiveUpdate: { liveUpdates.append($0); return true },
-            onCommit: { _ in },
+            onCommit: { baseline, draft in
+                commits.append((baseline, draft))
+                return true
+            },
+            onDraftPendingChanged: { pending, _ in pendingStates.append(pending) },
             onEditingChanged: { _ in }
         )
 
@@ -1694,11 +1698,83 @@ struct ReaderAnnotationOwnershipTests {
         )
 
         #expect(session.isEditing)
-        #expect(session.draft == "restored")
+        #expect(session.draft == "draft")
         #expect(session.selectedColor == .yellow)
-        #expect(liveUpdates == ["draft"])
+        #expect(pendingStates == [true])
         session.finishEditing()
         #expect(!session.isEditing)
+        #expect(commits.count == 1)
+        #expect(commits.first?.0 == "restored")
+        #expect(commits.first?.1 == "draft")
+        #expect(pendingStates == [true, false])
+    }
+
+    @Test
+    func saveStyleCommitRebasesAnOpenEditorForLaterTyping() {
+        var pendingStates: [Bool] = []
+        var commits: [(String, String)] = []
+        let session = AnnotationNoteEditingSession(
+            contents: "before",
+            color: AnnotationColorChoice.yellow.nsColor,
+            startsEditing: true,
+            onCommit: { baseline, draft in
+                commits.append((baseline, draft))
+                return true
+            },
+            onDraftPendingChanged: { pending, _ in pendingStates.append(pending) },
+            onEditingChanged: { _ in }
+        )
+
+        session.replaceDraft(with: "first")
+        #expect(session.commitIfNeeded(continuingEditing: true))
+        #expect(session.isEditing)
+        session.replaceDraft(with: "second")
+        #expect(session.commitIfNeeded(continuingEditing: true))
+
+        #expect(commits.count == 2)
+        #expect(commits[0].0 == "before")
+        #expect(commits[0].1 == "first")
+        #expect(commits[1].0 == "first")
+        #expect(commits[1].1 == "second")
+        #expect(pendingStates == [true, false, true, false])
+    }
+
+    @Test
+    func restoringTheOriginalDraftEndsPendingEditingImmediately() {
+        var pendingStates: [Bool] = []
+        let session = AnnotationNoteEditingSession(
+            contents: "before",
+            color: AnnotationColorChoice.yellow.nsColor,
+            startsEditing: true,
+            onCommit: { _, _ in true },
+            onDraftPendingChanged: { pending, _ in pendingStates.append(pending) },
+            onEditingChanged: { _ in }
+        )
+
+        session.replaceDraft(with: "changed")
+        session.replaceDraft(with: "before")
+
+        #expect(pendingStates == [true, false])
+    }
+
+    @Test
+    func failedCommitKeepsTheDraftPendingAndEditorOpen() {
+        var pendingStates: [Bool] = []
+        let session = AnnotationNoteEditingSession(
+            contents: "before",
+            color: AnnotationColorChoice.yellow.nsColor,
+            startsEditing: true,
+            onCommit: { _, _ in false },
+            onDraftPendingChanged: { pending, _ in pendingStates.append(pending) },
+            onEditingChanged: { _ in }
+        )
+
+        session.replaceDraft(with: "unsaved")
+        session.finishEditing()
+
+        #expect(session.isEditing)
+        #expect(session.draft == "unsaved")
+        #expect(pendingStates == [true])
     }
 
     @Test
@@ -1778,12 +1854,12 @@ struct ReaderAnnotationOwnershipTests {
                     colorUnavailableReason: nil
                 )
             },
-            onUpdateNote: { _, _ in true },
-            onCommitNoteEdit: { _, _ in },
+            onCommitNoteEdit: { _, _, _ in true },
             onDeleteNote: { _ in },
             onUpdateColor: { _, _, _ in true },
             onCancelTextNote: {},
             onCreateTextNote: { _, _ in nil },
+            onCreateHighlight: { _, _ in nil },
             preamble: "",
             annotationRevision: mathDocument.annotationRevision,
             enforceRuntimeAnnotationPresentation: mathDocument.enforceRuntimeAnnotationPresentation

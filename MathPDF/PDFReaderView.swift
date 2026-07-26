@@ -207,12 +207,12 @@ struct PDFReaderView: NSViewRepresentable {
     let proxy: PDFViewProxy
     let noteForAnnotation: (PDFAnnotation) -> AnnotationNote?
     let capabilitiesForAnnotation: (PDFAnnotation) -> AnnotationNoteCapabilities
-    let onUpdateNote: (AnnotationNote, String) -> Bool
-    let onCommitNoteEdit: (AnnotationNote, String) -> Void
+    let onCommitNoteEdit: (AnnotationNote, String, String) -> Bool
     let onDeleteNote: (AnnotationNote) -> Void
     let onUpdateColor: (AnnotationNote, AnnotationColorChoice, UndoManager?) -> Bool
     let onCancelTextNote: () -> Void
     let onCreateTextNote: (PDFPage, CGPoint) -> AnnotationNote?
+    let onCreateHighlight: (PDFSelection, Bool) -> PDFAnnotation?
     let onAnnotationPresentationChanged: (AnnotationNote.ID, Bool) -> Void
     let enforceRuntimeAnnotationPresentation: () -> Void
 
@@ -223,12 +223,12 @@ struct PDFReaderView: NSViewRepresentable {
             proxy: proxy,
             noteForAnnotation: noteForAnnotation,
             capabilitiesForAnnotation: capabilitiesForAnnotation,
-            onUpdateNote: onUpdateNote,
             onCommitNoteEdit: onCommitNoteEdit,
             onDeleteNote: onDeleteNote,
             onUpdateColor: onUpdateColor,
             onCancelTextNote: onCancelTextNote,
             onCreateTextNote: onCreateTextNote,
+            onCreateHighlight: onCreateHighlight,
             preamble: preamble,
             annotationRevision: annotationRevision,
             onAnnotationPresentationChanged: onAnnotationPresentationChanged,
@@ -238,24 +238,26 @@ struct PDFReaderView: NSViewRepresentable {
     }
 
     func updateNSView(_ view: ReaderContainerView, context: Context) {
+        // An outgoing editor must commit through the callbacks that own its
+        // current document. Replacing callbacks first could route that draft
+        // into the incoming document.
+        if view.pdfView.document !== document {
+            guard view.setDocument(document) else { return }
+        }
         view.updateCallbacks(
             noteForAnnotation: noteForAnnotation,
             capabilitiesForAnnotation: capabilitiesForAnnotation,
-            onUpdateNote: onUpdateNote,
             onCommitNoteEdit: onCommitNoteEdit,
             onDeleteNote: onDeleteNote,
             onUpdateColor: onUpdateColor,
             onCancelTextNote: onCancelTextNote,
             onCreateTextNote: onCreateTextNote,
+            onCreateHighlight: onCreateHighlight,
             preamble: preamble,
             onAnnotationPresentationChanged: onAnnotationPresentationChanged,
             enforceRuntimeAnnotationPresentation: enforceRuntimeAnnotationPresentation
         )
         view.pdfView.readerTool = tool
-
-        if view.pdfView.document !== document {
-            view.setDocument(document)
-        }
         view.updateAnnotationRevision(annotationRevision)
         if let navigationRequest {
             view.handle(navigationRequest)
@@ -285,6 +287,69 @@ private final class ActiveAnnotationPresentation {
     }
 }
 
+private final class PendingDocumentEditor: NSObject, NSEditor {
+    private weak var document: NSDocument?
+    let commitHandler: () -> Bool
+    let discardHandler: () -> Void
+    private var registrationEnded = false
+
+    init(
+        document: NSDocument,
+        commit: @escaping () -> Bool,
+        discard: @escaping () -> Void
+    ) {
+        self.document = document
+        commitHandler = commit
+        discardHandler = discard
+        super.init()
+        document.objectDidBeginEditing(self)
+        document.updateChangeCount(.changeDone)
+    }
+
+    @objc func commitEditing() -> Bool {
+        let committed = commitHandler()
+        if committed { finishRegistration() }
+        return committed
+    }
+    func commitEditingWithoutPresentingError() throws {
+        guard commitHandler() else {
+            throw CocoaError(.validationMultipleErrors)
+        }
+        finishRegistration()
+    }
+    func commitEditing(
+        withDelegate delegate: Any?,
+        didCommit didCommitSelector: Selector?,
+        contextInfo: UnsafeMutableRawPointer?
+    ) {
+        let committed = commitHandler()
+        if committed { finishRegistration() }
+        guard let delegate = delegate as? NSObject,
+              let didCommitSelector,
+              delegate.responds(to: didCommitSelector) else { return }
+        typealias Callback = @convention(c) (
+            AnyObject,
+            Selector,
+            AnyObject,
+            Bool,
+            UnsafeMutableRawPointer?
+        ) -> Void
+        let callback = unsafeBitCast(delegate.method(for: didCommitSelector), to: Callback.self)
+        callback(delegate, didCommitSelector, self, committed, contextInfo)
+    }
+    @objc func discardEditing() {
+        discardHandler()
+        finishRegistration()
+    }
+
+    func finishRegistration() {
+        guard !registrationEnded else { return }
+        registrationEnded = true
+        document?.updateChangeCount(.changeUndone)
+        document?.objectDidEndEditing(self)
+    }
+}
+
 final class ReaderContainerView: NSView {
     let pdfView = ReaderPDFView()
     private let annotationOverlay = AnnotationAffordanceOverlayView()
@@ -292,12 +357,12 @@ final class ReaderContainerView: NSView {
     private weak var proxy: PDFViewProxy?
     private var noteForAnnotation: ((PDFAnnotation) -> AnnotationNote?)?
     private var capabilitiesForAnnotation: ((PDFAnnotation) -> AnnotationNoteCapabilities)?
-    private var onUpdateNote: ((AnnotationNote, String) -> Bool)?
-    private var onCommitNoteEdit: ((AnnotationNote, String) -> Void)?
+    private var onCommitNoteEdit: ((AnnotationNote, String, String) -> Bool)?
     private var onDeleteNote: ((AnnotationNote) -> Void)?
     private var onUpdateColor: ((AnnotationNote, AnnotationColorChoice, UndoManager?) -> Bool)?
     private var onCancelTextNote: (() -> Void)?
     private var onCreateTextNote: ((PDFPage, CGPoint) -> AnnotationNote?)?
+    private var onCreateHighlight: ((PDFSelection, Bool) -> PDFAnnotation?)?
     private var onAnnotationPresentationChanged: ((AnnotationNote.ID, Bool) -> Void)?
     private var enforceRuntimeAnnotationPresentation: (() -> Void)?
     private var preamble = ""
@@ -307,6 +372,9 @@ final class ReaderContainerView: NSView {
     private var activePresentation: ActiveAnnotationPresentation?
     private var annotationSurface: NSHostingView<AnnotationNoteSurface>?
     private var annotationEditingSession: AnnotationNoteEditingSession?
+    private var pendingDocumentEditor: PendingDocumentEditor?
+    private weak var pendingEditingDocument: NSDocument?
+    private var pendingDraftPriorEditedState: Bool?
     private var annotationSurfaceIsEditing = false
     private var preferredSurfaceSize = NSSize(width: 310, height: 210)
     private var lastDocumentVisibleOrigin: NSPoint?
@@ -347,6 +415,15 @@ final class ReaderContainerView: NSView {
             self.presentNote(for: note.annotation, startsEditing: true)
         }
         pdfView.onCancelTextNote = { [weak self] in self?.onCancelTextNote?() }
+        pdfView.onCreateHighlight = { [weak self] selection, withNote in
+            guard
+                let self,
+                let annotation = self.onCreateHighlight?(selection, withNote)
+            else { return }
+            if withNote {
+                self.presentNote(for: annotation, startsEditing: true)
+            }
+        }
         pdfView.onBeginScroll = { [weak self] in self?.dismissAnnotationSurface() }
         pdfView.onBackgroundActivated = { [weak self] in self?.dismissAnnotationSurface() }
     }
@@ -370,12 +447,12 @@ final class ReaderContainerView: NSView {
         proxy: PDFViewProxy,
         noteForAnnotation: @escaping (PDFAnnotation) -> AnnotationNote?,
         capabilitiesForAnnotation: @escaping (PDFAnnotation) -> AnnotationNoteCapabilities,
-        onUpdateNote: @escaping (AnnotationNote, String) -> Bool,
-        onCommitNoteEdit: @escaping (AnnotationNote, String) -> Void,
+        onCommitNoteEdit: @escaping (AnnotationNote, String, String) -> Bool,
         onDeleteNote: @escaping (AnnotationNote) -> Void,
         onUpdateColor: @escaping (AnnotationNote, AnnotationColorChoice, UndoManager?) -> Bool,
         onCancelTextNote: @escaping () -> Void,
         onCreateTextNote: @escaping (PDFPage, CGPoint) -> AnnotationNote?,
+        onCreateHighlight: @escaping (PDFSelection, Bool) -> PDFAnnotation?,
         preamble: String,
         annotationRevision: Int,
         onAnnotationPresentationChanged: @escaping (AnnotationNote.ID, Bool) -> Void = { _, _ in },
@@ -385,12 +462,12 @@ final class ReaderContainerView: NSView {
         updateCallbacks(
             noteForAnnotation: noteForAnnotation,
             capabilitiesForAnnotation: capabilitiesForAnnotation,
-            onUpdateNote: onUpdateNote,
             onCommitNoteEdit: onCommitNoteEdit,
             onDeleteNote: onDeleteNote,
             onUpdateColor: onUpdateColor,
             onCancelTextNote: onCancelTextNote,
             onCreateTextNote: onCreateTextNote,
+            onCreateHighlight: onCreateHighlight,
             preamble: preamble,
             onAnnotationPresentationChanged: onAnnotationPresentationChanged,
             enforceRuntimeAnnotationPresentation: enforceRuntimeAnnotationPresentation
@@ -470,12 +547,12 @@ final class ReaderContainerView: NSView {
     func updateCallbacks(
         noteForAnnotation: @escaping (PDFAnnotation) -> AnnotationNote?,
         capabilitiesForAnnotation: @escaping (PDFAnnotation) -> AnnotationNoteCapabilities,
-        onUpdateNote: @escaping (AnnotationNote, String) -> Bool,
-        onCommitNoteEdit: @escaping (AnnotationNote, String) -> Void,
+        onCommitNoteEdit: @escaping (AnnotationNote, String, String) -> Bool,
         onDeleteNote: @escaping (AnnotationNote) -> Void,
         onUpdateColor: @escaping (AnnotationNote, AnnotationColorChoice, UndoManager?) -> Bool,
         onCancelTextNote: @escaping () -> Void,
         onCreateTextNote: @escaping (PDFPage, CGPoint) -> AnnotationNote?,
+        onCreateHighlight: @escaping (PDFSelection, Bool) -> PDFAnnotation?,
         preamble: String,
         onAnnotationPresentationChanged: @escaping (AnnotationNote.ID, Bool) -> Void,
         enforceRuntimeAnnotationPresentation: @escaping () -> Void
@@ -483,12 +560,12 @@ final class ReaderContainerView: NSView {
         let preambleChanged = self.preamble != preamble
         self.noteForAnnotation = noteForAnnotation
         self.capabilitiesForAnnotation = capabilitiesForAnnotation
-        self.onUpdateNote = onUpdateNote
         self.onCommitNoteEdit = onCommitNoteEdit
         self.onDeleteNote = onDeleteNote
         self.onUpdateColor = onUpdateColor
         self.onCancelTextNote = onCancelTextNote
         self.onCreateTextNote = onCreateTextNote
+        self.onCreateHighlight = onCreateHighlight
         self.onAnnotationPresentationChanged = onAnnotationPresentationChanged
         self.enforceRuntimeAnnotationPresentation = enforceRuntimeAnnotationPresentation
         self.preamble = preamble
@@ -498,9 +575,10 @@ final class ReaderContainerView: NSView {
         }
     }
 
-    func setDocument(_ document: PDFDocument) {
+    @discardableResult
+    func setDocument(_ document: PDFDocument) -> Bool {
         enforceRuntimeAnnotationPresentation?()
-        dismissAnnotationSurface()
+        guard dismissAnnotationSurface() else { return false }
         pdfView.cancelPendingAnnotationInteraction()
         pendingNavigationPresentationToken = nil
         lastAnnotationRevision = nil
@@ -509,6 +587,7 @@ final class ReaderContainerView: NSView {
         enforceRuntimeAnnotationPresentation?()
         proxy?.attach(pdfView)
         annotationOverlay.refresh()
+        return true
     }
 
     func updateAnnotationRevision(_ revision: Int) {
@@ -521,7 +600,6 @@ final class ReaderContainerView: NSView {
 
     func handle(_ request: ReaderNavigationRequest) {
         guard lastNavigationToken != request.token else { return }
-        lastNavigationToken = request.token
         guard let document = pdfView.document, let page = document.page(at: request.pageIndex) else { return }
 
         let originalScale = pdfView.scaleFactor
@@ -531,11 +609,12 @@ final class ReaderContainerView: NSView {
         )
         let pageRect = request.bounds ?? CGRect(origin: pagePoint, size: CGSize(width: 1, height: 1))
         if request.opensNote {
-            dismissAnnotationSurface()
+            guard dismissAnnotationSurface() else { return }
             pendingNavigationPresentationToken = request.token
         } else {
             pendingNavigationPresentationToken = nil
         }
+        lastNavigationToken = request.token
         pdfView.reveal(pageRect, on: page, padding: 24)
         assert(pdfView.scaleFactor == originalScale)
 
@@ -566,10 +645,11 @@ final class ReaderContainerView: NSView {
         guard
             let note = noteForAnnotation?(annotation),
             let capabilities = capabilitiesForAnnotation?(annotation),
+            let commitNoteEdit = onCommitNoteEdit,
             annotation.page != nil
         else { return }
 
-        dismissAnnotationSurface()
+        guard dismissAnnotationSurface() else { return }
         let selectedColor = AnnotationColorChoice.matching(annotation.color)
         let presentation = ActiveAnnotationPresentation(
             annotation: annotation,
@@ -593,19 +673,19 @@ final class ReaderContainerView: NSView {
             contents: note.contents,
             color: annotation.color,
             startsEditing: annotationSurfaceIsEditing,
-            onLiveUpdate: { [weak self, weak presentation] contents in
-                guard let self, let presentation else { return false }
-                let previousContents = presentation.contents
-                presentation.contents = contents
-                guard self.onUpdateNote?(note, contents) == true else {
-                    presentation.contents = previousContents
-                    return false
+            onCommit: { [weak self, weak presentation] originalContents, contents in
+                guard commitNoteEdit(note, originalContents, contents) else { return false }
+                if let document = self?.window?.windowController?.document {
+                    document.updateChangeCount(.changeDone)
+                } else {
+                    self?.window?.isDocumentEdited = true
                 }
-                self.annotationOverlay.refresh()
+                presentation?.contents = contents
+                self?.annotationOverlay.refresh()
                 return true
             },
-            onCommit: { [weak self] originalContents in
-                self?.onCommitNoteEdit?(note, originalContents)
+            onDraftPendingChanged: { [weak self] isPending, committed in
+                self?.updatePendingDraftState(isPending, committed: committed)
             },
             onEditingChanged: { [weak self] isEditing in
                 guard let self else { return }
@@ -616,6 +696,7 @@ final class ReaderContainerView: NSView {
                 )
                 self.layoutAnnotationSurface()
                 if !isEditing {
+                    self.endPendingDocumentEditing()
                     DispatchQueue.main.async { [weak self] in
                         self?.reconcileActivePresentation()
                     }
@@ -667,24 +748,88 @@ final class ReaderContainerView: NSView {
         onAnnotationPresentationChanged?(note.id, true)
     }
 
-    private func dismissAnnotationSurface(commitEditing: Bool = true) {
+    @discardableResult
+    private func dismissAnnotationSurface(commitEditing: Bool = true) -> Bool {
         let dismissedNoteID = activePresentation.flatMap { presentation in
             noteForAnnotation?(presentation.annotation)?.id
         }
         if commitEditing {
-            annotationEditingSession?.commitIfNeeded()
+            guard annotationEditingSession?.commitIfNeeded() != false else { return false }
+        } else {
+            annotationEditingSession?.discardPendingChanges()
         }
+        endPendingDocumentEditing()
         annotationSurface?.removeFromSuperview()
         annotationSurface = nil
         annotationEditingSession = nil
         activePresentation = nil
         annotationSurfaceIsEditing = false
         annotationOverlay.activeAnnotation = nil
-        annotationOverlay.surfaceFrame = nil
         annotationOverlay.refresh()
         if let dismissedNoteID {
             onAnnotationPresentationChanged?(dismissedNoteID, false)
         }
+        return true
+    }
+
+    private func beginPendingDocumentEditingIfNeeded() {
+        guard pendingDocumentEditor == nil,
+              let editingSession = annotationEditingSession,
+              let appDocument = window?.windowController?.document as? NSDocument else { return }
+        let editor = PendingDocumentEditor(
+            document: appDocument,
+            commit: { [weak self, editingSession] in
+                guard editingSession.commitIfNeeded(
+                    continuingEditing: true
+                ) else { return false }
+                if self?.annotationEditingSession === editingSession {
+                    self?.pendingDocumentEditor = nil
+                    self?.pendingEditingDocument = nil
+                }
+                return true
+            },
+            discard: { [weak self, editingSession] in
+                editingSession.discardPendingChanges()
+                if self?.annotationEditingSession === editingSession {
+                    self?.pendingDocumentEditor = nil
+                    self?.pendingEditingDocument = nil
+                }
+            }
+        )
+        pendingDocumentEditor = editor
+        pendingEditingDocument = appDocument
+    }
+
+    private func endPendingDocumentEditing() {
+        guard let editor = pendingDocumentEditor else { return }
+        pendingDocumentEditor = nil
+        pendingEditingDocument = nil
+        editor.finishRegistration()
+    }
+
+    private func updatePendingDraftState(_ isPending: Bool, committed: Bool) {
+        if isPending {
+            if pendingDraftPriorEditedState == nil {
+                pendingDraftPriorEditedState = window?.isDocumentEdited ?? false
+            }
+            beginPendingDocumentEditingIfNeeded()
+            window?.isDocumentEdited = true
+            return
+        }
+
+        endPendingDocumentEditing()
+        let priorEditedState = pendingDraftPriorEditedState ?? false
+        pendingDraftPriorEditedState = nil
+        window?.isDocumentEdited = priorEditedState || committed
+    }
+
+    override func viewWillMove(toWindow newWindow: NSWindow?) {
+        if newWindow == nil {
+            if annotationEditingSession?.commitIfNeeded() != false {
+                endPendingDocumentEditing()
+            }
+        }
+        super.viewWillMove(toWindow: newWindow)
     }
 
     private func revealActiveAnnotation() {
@@ -782,18 +927,14 @@ final class ReaderContainerView: NSView {
             dismissAnnotationSurface()
             return
         }
-        let anchor: NSRect
-        if let affordanceFrame = annotationOverlay.affordanceFrame(for: annotation) {
-            anchor = affordanceFrame
-        } else {
-            anchor = annotationFrame
-        }
-        let gap: CGFloat = 14
+        let gap: CGFloat = 8
+        let anchoredX = min(
+            max(annotationFrame.minX, safeBounds.minX),
+            safeBounds.maxX - size.width
+        )
         let candidates = [
-            NSRect(x: anchor.midX - size.width / 2, y: anchor.minY - gap - size.height, width: size.width, height: size.height),
-            NSRect(x: anchor.midX - size.width / 2, y: anchor.maxY + gap, width: size.width, height: size.height),
-            NSRect(x: anchor.maxX + gap, y: anchor.midY - size.height / 2, width: size.width, height: size.height),
-            NSRect(x: anchor.minX - gap - size.width, y: anchor.midY - size.height / 2, width: size.width, height: size.height),
+            NSRect(x: anchoredX, y: annotationFrame.minY - gap - size.height, width: size.width, height: size.height),
+            NSRect(x: anchoredX, y: annotationFrame.maxY + gap, width: size.width, height: size.height),
         ]
 
         let protectedAnnotationFrame = annotationFrame.insetBy(dx: -10, dy: -10)
@@ -804,7 +945,6 @@ final class ReaderContainerView: NSView {
             ?? clampedFrame(bestCandidate(from: candidates, in: safeBounds), inside: safeBounds)
         surface.frame = frame
         annotationOverlay.activeAnnotation = annotation
-        annotationOverlay.surfaceFrame = frame
         annotationOverlay.refresh()
     }
 
@@ -914,16 +1054,15 @@ final class ReaderPDFView: PDFView {
     }
     var onAnnotationActivated: ((PDFAnnotation) -> Void)?
     var onCreateTextNote: ((PDFPage, CGPoint) -> Void)?
+    var onCreateHighlight: ((PDFSelection, Bool) -> Void)?
     var onCancelTextNote: (() -> Void)?
     var onBeginScroll: (() -> Void)?
     var onBackgroundActivated: (() -> Void)?
 
     private var mouseDownLocation: CGPoint?
     private var deferredMouseDownEvent: NSEvent?
-    private var deferredMouseUpEvent: NSEvent?
     private var deferredAnnotation: PDFAnnotation?
     private var forwardedDeferredMouseDown = false
-    private var pendingSingleClickWorkItem: DispatchWorkItem?
     private var windowResignObserver: NSObjectProtocol?
 
     deinit {
@@ -949,16 +1088,6 @@ final class ReaderPDFView: PDFView {
     }
 
     override func mouseDown(with event: NSEvent) {
-        if pendingSingleClickWorkItem != nil {
-            if event.clickCount > 1 {
-                replayDeferredClickToPDFKit()
-                clearDeferredAnnotationInteraction()
-                super.mouseDown(with: event)
-                return
-            }
-            clearDeferredAnnotationInteraction()
-        }
-
         mouseDownLocation = convert(event.locationInWindow, from: nil)
 
         if readerTool == .textNote,
@@ -1031,21 +1160,8 @@ final class ReaderPDFView: PDFView {
                 super.mouseUp(with: event)
                 clearDeferredAnnotationInteraction()
             } else {
-                deferredMouseUpEvent = event
-                let workItem = DispatchWorkItem { [weak self, weak deferredAnnotation] in
-                    guard
-                        let self,
-                        let deferredAnnotation,
-                        self.deferredAnnotation === deferredAnnotation
-                    else { return }
-                    self.onAnnotationActivated?(deferredAnnotation)
-                    self.clearDeferredAnnotationInteraction()
-                }
-                pendingSingleClickWorkItem = workItem
-                DispatchQueue.main.asyncAfter(
-                    deadline: .now() + NSEvent.doubleClickInterval,
-                    execute: workItem
-                )
+                onAnnotationActivated?(deferredAnnotation)
+                clearDeferredAnnotationInteraction()
             }
             return
         }
@@ -1055,10 +1171,7 @@ final class ReaderPDFView: PDFView {
     }
 
     private func clearDeferredAnnotationInteraction() {
-        pendingSingleClickWorkItem?.cancel()
-        pendingSingleClickWorkItem = nil
         deferredMouseDownEvent = nil
-        deferredMouseUpEvent = nil
         deferredAnnotation = nil
         forwardedDeferredMouseDown = false
         mouseDownLocation = nil
@@ -1068,12 +1181,48 @@ final class ReaderPDFView: PDFView {
         clearDeferredAnnotationInteraction()
     }
 
-    private func replayDeferredClickToPDFKit() {
-        guard let deferredMouseDownEvent else { return }
-        super.mouseDown(with: deferredMouseDownEvent)
-        if let deferredMouseUpEvent {
-            super.mouseUp(with: deferredMouseUpEvent)
+    override func menu(for event: NSEvent) -> NSMenu? {
+        let menu = super.menu(for: event) ?? NSMenu(title: "Selection")
+        guard
+            readerTool == .browse,
+            let selection = currentSelection,
+            !(selection.string ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        else { return menu }
+
+        if !menu.items.isEmpty, menu.items.last?.isSeparatorItem == false {
+            menu.addItem(.separator())
         }
+        let highlight = NSMenuItem(
+            title: "Highlight",
+            action: #selector(highlightSelection(_:)),
+            keyEquivalent: ""
+        )
+        highlight.image = NSImage(systemSymbolName: "highlighter", accessibilityDescription: nil)
+        highlight.target = self
+        menu.addItem(highlight)
+
+        let highlightWithNote = NSMenuItem(
+            title: "Highlight with Note",
+            action: #selector(highlightSelectionWithNote(_:)),
+            keyEquivalent: ""
+        )
+        highlightWithNote.image = NSImage(
+            systemSymbolName: "text.badge.plus",
+            accessibilityDescription: nil
+        )
+        highlightWithNote.target = self
+        menu.addItem(highlightWithNote)
+        return menu
+    }
+
+    @objc private func highlightSelection(_ sender: Any?) {
+        guard let selection = currentSelection else { return }
+        onCreateHighlight?(selection, false)
+    }
+
+    @objc private func highlightSelectionWithNote(_ sender: Any?) {
+        guard let selection = currentSelection else { return }
+        onCreateHighlight?(selection, true)
     }
 
     private func isNoteAnnotation(_ annotation: PDFAnnotation) -> Bool {
@@ -1143,10 +1292,8 @@ final class AnnotationAffordanceOverlayView: NSView {
     weak var pdfView: ReaderPDFView?
     var onActivate: ((PDFAnnotation) -> Void)?
     var activeAnnotation: PDFAnnotation?
-    var surfaceFrame: NSRect?
 
     private var buttons: [ObjectIdentifier: AnnotationBadgeButton] = [:]
-    private var anchorPoints: [ObjectIdentifier: CGPoint] = [:]
 
     private struct BadgeGroup {
         let primary: PDFAnnotation
@@ -1162,80 +1309,36 @@ final class AnnotationAffordanceOverlayView: NSView {
         return hit === self ? nil : hit
     }
 
-    override func draw(_ dirtyRect: NSRect) {
-        super.draw(dirtyRect)
-
-        for (identifier, button) in buttons {
-            guard let anchor = anchorPoints[identifier] else { continue }
-            let center = CGPoint(x: button.frame.midX, y: button.frame.midY)
-            guard hypot(center.x - anchor.x, center.y - anchor.y) > 18 else { continue }
-            let path = NSBezierPath()
-            path.move(to: anchor)
-            path.line(to: center)
-            button.annotationColor.withAlphaComponent(0.48).setStroke()
-            path.lineCapStyle = .round
-            path.lineWidth = 1.25
-            path.stroke()
-        }
-
-        guard
-            let surfaceFrame,
-            let activeAnnotation,
-            let button = buttons.values.first(where: { candidate in
-                candidate.annotations.contains(where: { $0 === activeAnnotation })
-            })
-        else { return }
-
-        let start = CGPoint(x: button.frame.midX, y: button.frame.midY)
-        let end = closestPoint(on: surfaceFrame, to: start)
-        let path = NSBezierPath()
-        path.move(to: start)
-        path.line(to: end)
-        activeAnnotation.color.withAlphaComponent(0.68).setStroke()
-        path.lineCapStyle = .round
-        path.lineWidth = 1.5
-        path.stroke()
-    }
-
     func refresh() {
         guard let pdfView, let document = pdfView.document else {
             buttons.values.forEach { $0.removeFromSuperview() }
             buttons.removeAll()
-            anchorPoints.removeAll()
             needsDisplay = true
             return
         }
 
         var visible: [ObjectIdentifier: BadgeGroup] = [:]
-        var occupiedFrames: [NSRect] = []
         for page in visiblePages(in: document, pdfView: pdfView) {
             let annotations = page.annotations
                 .filter(isCommentedHighlight)
                 .sorted {
                     markerFrame(for: $0, on: page, in: pdfView).minY
                         < markerFrame(for: $1, on: page, in: pdfView).minY
-                }
+            }
             for annotation in annotations {
                 let desiredFrame = markerFrame(for: annotation, on: page, in: pdfView)
-                if let markerFrame = collisionAdjustedFrame(
-                    desiredFrame,
-                    avoiding: occupiedFrames,
-                    inside: bounds.insetBy(dx: 4, dy: 4)
-                ) {
-                    guard markerFrame.intersects(bounds.insetBy(dx: -20, dy: -20)) else { continue }
+                guard desiredFrame.intersects(bounds.insetBy(dx: -20, dy: -20)) else { continue }
+                if let nearbyIdentifier = visible.first(where: { _, group in
+                    group.frame.insetBy(dx: -5, dy: -5).intersects(desiredFrame)
+                })?.key {
+                    visible[nearbyIdentifier]?.annotations.append(annotation)
+                } else {
                     let identifier = ObjectIdentifier(annotation)
                     visible[identifier] = BadgeGroup(
                         primary: annotation,
                         annotations: [annotation],
-                        frame: markerFrame
+                        frame: desiredFrame
                     )
-                    anchorPoints[identifier] = annotationAnchor(for: annotation, on: page, in: pdfView)
-                    occupiedFrames.append(markerFrame)
-                } else if let nearestIdentifier = visible.min(by: { lhs, rhs in
-                    distance(from: lhs.value.frame, to: desiredFrame)
-                        < distance(from: rhs.value.frame, to: desiredFrame)
-                })?.key {
-                    visible[nearestIdentifier]?.annotations.append(annotation)
                 }
             }
         }
@@ -1243,7 +1346,6 @@ final class AnnotationAffordanceOverlayView: NSView {
         let staleIdentifiers = buttons.keys.filter { visible[$0] == nil }
         for identifier in staleIdentifiers {
             buttons.removeValue(forKey: identifier)?.removeFromSuperview()
-            anchorPoints.removeValue(forKey: identifier)
         }
 
         for (identifier, payload) in visible {
@@ -1267,12 +1369,6 @@ final class AnnotationAffordanceOverlayView: NSView {
             button.setAccessibilityLabel(accessibilityLabel(for: payload.annotations))
         }
         needsDisplay = true
-    }
-
-    func affordanceFrame(for annotation: PDFAnnotation) -> NSRect? {
-        buttons.values.first(where: { button in
-            button.annotations.contains(where: { $0 === annotation })
-        })?.frame
     }
 
     @objc private func activateBadge(_ sender: AnnotationBadgeButton) {
@@ -1332,53 +1428,6 @@ final class AnnotationAffordanceOverlayView: NSView {
         return NSRect(x: centerInOverlay.x - 14, y: centerInOverlay.y - 14, width: 28, height: 28)
     }
 
-    private func annotationAnchor(
-        for annotation: PDFAnnotation,
-        on page: PDFPage,
-        in pdfView: PDFView
-    ) -> CGPoint {
-        let highlightRect = pdfView.convert(finalQuadBounds(for: annotation), from: page)
-        return convert(CGPoint(x: highlightRect.maxX, y: highlightRect.midY), from: pdfView)
-    }
-
-    private func collisionAdjustedFrame(
-        _ desired: NSRect,
-        avoiding occupied: [NSRect],
-        inside limits: NSRect
-    ) -> NSRect? {
-        let verticalSteps = max(1, Int(ceil(limits.height / 30)))
-        let horizontalSteps = max(1, min(4, Int(ceil(limits.width / 30))))
-        var offsets: [CGPoint] = [.zero]
-        for radius in 1...max(verticalSteps, horizontalSteps) {
-            if radius <= verticalSteps {
-                offsets.append(CGPoint(x: 0, y: CGFloat(-30 * radius)))
-                offsets.append(CGPoint(x: 0, y: CGFloat(30 * radius)))
-            }
-            if radius <= horizontalSteps {
-                for verticalRadius in 0...min(radius, verticalSteps) {
-                    let y = CGFloat(30 * verticalRadius)
-                    for xSign: CGFloat in [1, -1] {
-                        offsets.append(CGPoint(x: CGFloat(30 * radius) * xSign, y: y))
-                        if y > 0 {
-                            offsets.append(CGPoint(x: CGFloat(30 * radius) * xSign, y: -y))
-                        }
-                    }
-                }
-            }
-        }
-        for offset in offsets {
-            let candidate = desired.offsetBy(dx: offset.x, dy: offset.y)
-            if limits.contains(candidate), !occupied.contains(where: { $0.intersects(candidate) }) {
-                return candidate
-            }
-        }
-        return nil
-    }
-
-    private func distance(from lhs: NSRect, to rhs: NSRect) -> CGFloat {
-        hypot(lhs.midX - rhs.midX, lhs.midY - rhs.midY)
-    }
-
     private func visiblePages(in document: PDFDocument, pdfView: PDFView) -> [PDFPage] {
         let visiblePages = pdfView.visiblePages
         if !visiblePages.isEmpty { return visiblePages }
@@ -1435,12 +1484,6 @@ final class AnnotationAffordanceOverlayView: NSView {
         return "Page \(pageNumber(for: annotation)): \(clipped)"
     }
 
-    private func closestPoint(on rect: NSRect, to point: CGPoint) -> CGPoint {
-        CGPoint(
-            x: min(max(point.x, rect.minX), rect.maxX),
-            y: min(max(point.y, rect.minY), rect.maxY)
-        )
-    }
 }
 
 final class AnnotationBadgeButton: NSButton {
@@ -1465,8 +1508,8 @@ final class AnnotationBadgeButton: NSButton {
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 
     override func draw(_ dirtyRect: NSRect) {
-        let badgeRect = NSRect(x: 5, y: 8, width: 18, height: 14)
-        let badge = NSBezierPath(roundedRect: badgeRect, xRadius: 5, yRadius: 5)
+        let badgeRect = NSRect(x: 3, y: 5, width: 22, height: 19)
+        let badge = NSBezierPath(roundedRect: badgeRect, xRadius: 5.5, yRadius: 5.5)
         let fillColor = annotationColor.blended(
             withFraction: isHovered ? 0.09 : 0,
             of: .labelColor
@@ -1479,9 +1522,9 @@ final class AnnotationBadgeButton: NSButton {
         badge.stroke()
 
         let tail = NSBezierPath()
-        tail.move(to: CGPoint(x: badgeRect.minX + 4, y: badgeRect.minY + 1.5))
-        tail.line(to: CGPoint(x: badgeRect.minX + 2, y: badgeRect.minY - 3))
-        tail.line(to: CGPoint(x: badgeRect.minX + 8, y: badgeRect.minY + 1))
+        tail.move(to: CGPoint(x: badgeRect.maxX - 7, y: badgeRect.minY + 1.5))
+        tail.line(to: CGPoint(x: badgeRect.maxX - 3, y: badgeRect.minY - 2.5))
+        tail.line(to: CGPoint(x: badgeRect.maxX - 3, y: badgeRect.minY + 4))
         tail.close()
         fillColor.withAlphaComponent(0.96).setFill()
         tail.fill()
@@ -1500,7 +1543,7 @@ final class AnnotationBadgeButton: NSButton {
             selectionRing.stroke()
         }
 
-        let glyphColor = NSColor.black.withAlphaComponent(isHovered ? 0.82 : 0.68)
+        let glyphColor = NSColor.black.withAlphaComponent(isHovered ? 0.82 : 0.64)
         if annotations.count > 1 {
             let count = annotations.count > 99 ? "99+" : String(annotations.count)
             let attributed = NSAttributedString(
@@ -1511,14 +1554,19 @@ final class AnnotationBadgeButton: NSButton {
                 ]
             )
             attributed.draw(
-                in: NSRect(x: badgeRect.minX, y: badgeRect.minY + 3, width: badgeRect.width, height: 12)
+                in: NSRect(x: badgeRect.minX, y: badgeRect.minY + 4, width: badgeRect.width, height: 12)
             )
             return
         }
 
-        glyphColor.setFill()
-        for x in [10.5, 14, 17.5] {
-            NSBezierPath(ovalIn: NSRect(x: x, y: 14, width: 1.7, height: 1.7)).fill()
+        glyphColor.setStroke()
+        for (y, inset) in [(17.5, 0.0), (14.0, 0.0), (10.5, 3.0)] {
+            let line = NSBezierPath()
+            line.move(to: CGPoint(x: badgeRect.minX + 6, y: y))
+            line.line(to: CGPoint(x: badgeRect.maxX - 5 - inset, y: y))
+            line.lineCapStyle = .round
+            line.lineWidth = 1.45
+            line.stroke()
         }
     }
 

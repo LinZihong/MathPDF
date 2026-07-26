@@ -20,18 +20,31 @@ struct ReaderSidebar: View {
 
     private var sidebarTitleMenu: some View {
         Menu {
-            Picker("Sidebar Content", selection: $controller.sidebarMode) {
-                ForEach(ReaderSidebarMode.allCases) { mode in
-                    Text(mode.rawValue).tag(mode)
+            ForEach(ReaderSidebarMode.allCases) { mode in
+                Button {
+                    controller.sidebarMode = mode
+                } label: {
+                    Label(
+                        mode.rawValue,
+                        systemImage: mode == controller.sidebarMode
+                            ? "checkmark"
+                            : (mode == .contents ? "list.bullet.indent" : "highlighter")
+                    )
                 }
             }
         } label: {
             HStack(spacing: 7) {
+                Image(
+                    systemName: controller.sidebarMode == .contents
+                        ? "list.bullet.indent"
+                        : "highlighter"
+                )
+                .foregroundStyle(.secondary)
                 Text(controller.sidebarMode.rawValue)
-                    .font(.headline)
+                    .font(.subheadline.weight(.semibold))
                     .foregroundStyle(.primary)
                 Image(systemName: "chevron.down")
-                    .font(.caption.bold())
+                    .font(.caption2.weight(.semibold))
                     .foregroundStyle(.secondary)
                 Spacer()
             }
@@ -43,7 +56,7 @@ struct ReaderSidebar: View {
         .accessibilityLabel("Sidebar Content")
         .accessibilityIdentifier("sidebar-content-menu")
         .padding(.horizontal, 12)
-        .frame(height: 46)
+        .frame(height: 38)
     }
 }
 

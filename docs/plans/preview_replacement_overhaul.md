@@ -1,7 +1,7 @@
 # Preview-Replacement Reader Overhaul
 
 Status: active
-Last updated: 2026-07-15
+Last updated: 2026-07-26
 Context: existing-project change
 Scheme: MathPDF
 Simulator: none, macOS app
@@ -116,6 +116,13 @@ rules.
   remain read-only rather than silently losing semantics.
 - Required build and test evidence is signed and normally runs outside the agent
   sandbox. Unsigned runs are diagnostic only.
+- Note editors own isolated local typing undo. Their pending draft is registered
+  with `NSDocument` so save/close cannot silently bypass it; a successful Done
+  creates one document undo mutation, while returning the draft or committed
+  mutation to the saved baseline clears the real Edited state.
+- Find uses native adaptive `.searchable` and a focused per-window command
+  context. Command-F must remain usable at the default window width; process-
+  wide search notifications are not an acceptable multiwindow shortcut.
 
 ## Next Steps
 
@@ -142,13 +149,17 @@ rules.
 - [x] Inspect a `/tmp/MathPDF-Fixtures` research excerpt across the full
       workflow, obtain an independent static design ship verdict, and terminate
       every MathPDF instance.
-- [ ] Obtain the explicitly required independent Computer Use interaction
-      verdict. Three bounded attempts returned no visible state; each was
-      classified `UNVERIFIED`, interrupted, and cleaned up rather than inferred
-      from screenshots or code.
+- [x] Obtain the explicitly required independent Computer Use interaction
+      verdict. A visible main-task auditor first exposed false dirty-state truth
+      and inaccessible default-window Find, then returned `INTERACTIVE PASS` on
+      the corrected exact signed in-memory candidate. Every pass terminated the
+      exact MathPDF process.
 - [x] Author and check-only gatekeep the final holistic interactive-review
       prompt; retain it in `docs/FINAL_INTERACTIVE_REVIEW_PROMPT.md` until the
       signed candidate is ready.
+- [ ] Complete the final focused post-audit Computer Use contract covering
+      active-editor undo, committed undo, macro undo, Find cancellation, fixed
+      badge placement, single-affordance ownership, and exact cleanup.
 
 ## Validation
 
@@ -239,14 +250,46 @@ Passed:
   `/tmp/MathPDF-DerivedData/Logs/Test/Test-MathPDF-2026.07.15_04-19-13--0700.xcresult`.
   Each test explicitly quit MathPDF; no permission prompt or document path was
   involved.
+- 2026-07-19: all 68 assertions in the expanded signed production-host unit
+  suite passed. The `xcodebuild` process then stalled while finalizing coverage
+  or result logging and was terminated, so this is assertion evidence rather
+  than a clean command completion. Two later signed runner attempts stalled
+  before starting tests and add no product evidence.
+- 2026-07-19: the current source passed signed `build-for-testing` for the app,
+  unit-test, and UI-test targets. The final signed
+  `scripts/build-and-launch.sh --signed --build-only` passed and verified the
+  Apple Development signature, designated requirement, app sandbox, outgoing-
+  network, and user-selected read/write entitlements.
+- 2026-07-19: independent visible Computer Use returned `INTERACTIVE NO-PASS`
+  for false Edited state after undo, then `INTERACTIVE NO-PASS` for inaccessible
+  Find at the default width. After correction, the exact signed in-memory
+  candidate returned `INTERACTIVE PASS` with clean note undo/dirty truth,
+  accessible default-window Find, stable note geometry, coherent color, cleared
+  selection, one custom badge, and no PDFKit duplicate. The exact process was
+  closed and verified absent.
+- 2026-07-19: a final adversarial code audit confirmed closure of every reported
+  P1/P2, including failed-commit dismissal and view-teardown registration. A
+  fresh check-only prompt gatekeeper accepted the final focused interaction
+  prompt after two independent rejection diagnoses; gatekeepers supplied no
+  rewritten wording.
+- 2026-07-26: stricter visible review proved active-editor dirty state and local
+  undo, but returned `INTERACTIVE NO-PASS` because committing Done cleared the
+  window's Edited state and Math Macro edits never marked the real document
+  dirty. Both note and macro content undo restored their exact baselines. The
+  working tree now routes permanent mutations through an exact-window
+  `DocumentWindowState` and `NSDocument.updateChangeCount(.changeDone)` after
+  balancing the temporary draft transaction. The correction passes a signed
+  all-target `build-for-testing` and final signed build-only check but has not
+  yet received the required visible verdict or a refreshed test-runner pass.
 
 Not yet validated:
 
-- Independent design/product interaction through Computer Use. The final static
-  evidence has `VISUAL PASS`, and XCUITest proves the workflows, but the separate
-  expert Computer Use channel has stalled on every bounded attempt without
-  returning visible state. This is an evidence limitation, not a known product
-  failure.
+- The verbatim focused editor/committed-note/macro dirty-state and one-step Undo
+  contract after the 2026-07-26 exact-window change-accounting patch.
+- Clean completion of a new full Xcode unit/UI runner invocation after the
+  latest focused changes. Signed compile evidence is current and all 68 unit
+  assertions passed in the prior invocation, but recent runner finalization or
+  startup stalls prevent claiming a clean current test-command pass.
 - Idle autosave, Save As, Revert, close review, failure UI, external-file
   conflicts, real multi-window routing, accessibility configurations, and large-
   document responsiveness remain GUI/manual gates as defined in

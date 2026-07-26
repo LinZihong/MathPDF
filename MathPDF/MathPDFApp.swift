@@ -58,10 +58,10 @@ private struct ReaderCommands: Commands {
 
         CommandGroup(after: .textEditing) {
             Button("Find in PDF") {
-                NotificationCenter.default.post(name: .focusMathPDFSearch, object: nil)
+                readerCommandContext?.focusSearch()
             }
             .keyboardShortcut("f", modifiers: .command)
-            .disabled(pdfViewProxy == nil)
+            .disabled(readerCommandContext == nil)
         }
 
         CommandMenu("Math") {

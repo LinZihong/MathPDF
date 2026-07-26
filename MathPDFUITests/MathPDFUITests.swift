@@ -39,24 +39,29 @@ final class MathPDFUITests: XCTestCase {
         XCTAssertEqual(app.popovers.count, 0, "The integrated note surface must not compete with a PDFKit popover")
         XCTAssertTrue(app.buttons["note-edit"].exists)
         attachMathPDFWindow(named: "note-reading-surface")
-        let noteActions = app.menuButtons["note-actions"]
-        XCTAssertTrue(noteActions.waitForExistence(timeout: 5))
-        XCTAssertEqual(noteActions.value as? String, "Yellow")
-        noteActions.click()
-        let green = app.menuItems["Green"]
-        XCTAssertTrue(green.waitForExistence(timeout: 5))
+        let yellow = element("note-color-yellow")
+        let green = element("note-color-green")
+        XCTAssertTrue(yellow.waitForExistence(timeout: 5))
+        XCTAssertEqual(yellow.value as? String, "Selected")
+        XCTAssertTrue(green.exists)
+        XCTAssertFalse(windowTitleContains("Edited"))
         green.click()
-        XCTAssertEqual(noteActions.value as? String, "Green")
+        XCTAssertEqual(green.value as? String, "Selected")
+        XCTAssertTrue(waitForWindowTitle(toContain: "Edited"))
         attachMathPDFWindow(named: "note-recolored-green")
         app.typeKey("z", modifierFlags: .command)
         let undoRestoredVisibleColor = XCTNSPredicateExpectation(
-            predicate: NSPredicate(format: "value == %@", "Yellow"),
-            object: noteActions
+            predicate: NSPredicate(format: "value == %@", "Selected"),
+            object: yellow
         )
         XCTAssertEqual(
             XCTWaiter.wait(for: [undoRestoredVisibleColor], timeout: 5),
             .completed,
             "Undo must refresh the open surface to the document's restored color"
+        )
+        XCTAssertTrue(
+            waitForWindowTitle(toExclude: "Edited"),
+            "Undoing back to the saved state must clear the document's Edited status"
         )
         XCTAssertEqual(app.textFields["Page number"].value as? String, "2")
         let badge = app.buttons.matching(
@@ -90,13 +95,87 @@ final class MathPDFUITests: XCTestCase {
         note.click()
         XCTAssertTrue(app.buttons["note-edit"].waitForExistence(timeout: 8))
         app.buttons["note-edit"].click()
-        XCTAssertTrue(element("note-editor").waitForExistence(timeout: 5))
+        let editor = element("note-editor")
+        XCTAssertTrue(editor.waitForExistence(timeout: 5))
+        let editorBaseline = editor.value as? String
+        XCTAssertFalse(windowTitleContains("Edited"))
+        editor.click()
+        editor.typeText(" Additional detail.")
+        XCTAssertTrue(
+            waitForWindowTitle(toContain: "Edited"),
+            "An uncommitted note draft must participate in native document dirty state"
+        )
+        app.typeKey("z", modifierFlags: .command)
+        XCTAssertEqual(
+            editor.value as? String,
+            editorBaseline,
+            "Typing Undo must restore the exact open-editor buffer"
+        )
+        XCTAssertTrue(
+            waitForWindowTitle(toExclude: "Edited"),
+            "Typing Undo inside the note editor must return the draft transaction to baseline"
+        )
+        editor.typeText(" Additional detail.")
+        XCTAssertTrue(waitForWindowTitle(toContain: "Edited"))
+        app.buttons["note-done"].click()
+        app.typeKey("z", modifierFlags: .command)
+        XCTAssertTrue(
+            waitForWindowTitle(toExclude: "Edited"),
+            "Undoing the committed note edit back to the saved state must clear Edited"
+        )
 
         app.buttons["Close Note"].click()
+        let placeNote = element("place-note")
+        XCTAssertTrue(placeNote.waitForExistence(timeout: 5))
+        XCTAssertEqual(placeNote.value as? String, "Inactive")
+        placeNote.click()
+        XCTAssertEqual(placeNote.value as? String, "Active")
+        placeNote.click()
+        XCTAssertEqual(placeNote.value as? String, "Inactive")
+
         app.menuBars.menuBarItems["Math"].click()
         app.menuItems["Math Macros…"].click()
         XCTAssertTrue(app.staticTexts["Math Macros"].waitForExistence(timeout: 5))
         XCTAssertTrue(app.staticTexts["Document settings"].exists)
+        let preambleEditor = element("preamble-editor")
+        XCTAssertTrue(preambleEditor.waitForExistence(timeout: 5))
+        let preambleBaseline = preambleEditor.value as? String
+        preambleEditor.click()
+        preambleEditor.typeText("\\newcommand{\\Q}{\\mathbb{Q}}")
+        XCTAssertTrue(
+            waitForWindowTitle(toContain: "Edited"),
+            "Macro typing must use the focused document's native dirty state"
+        )
+        app.typeKey("z", modifierFlags: .command)
+        XCTAssertEqual(
+            preambleEditor.value as? String,
+            preambleBaseline,
+            "One native typing Undo must restore the exact macro source"
+        )
+        XCTAssertTrue(
+            waitForWindowTitle(toExclude: "Edited"),
+            "One native typing Undo must not compete with a second model-level undo"
+        )
+    }
+
+    @MainActor
+    func testCommandFFindsTextAtTheDefaultWindowSize() {
+        XCTAssertTrue(element("pdf-reader").waitForExistence(timeout: 8))
+
+        app.typeKey("f", modifierFlags: .command)
+        let searchField = app.searchFields["Search PDF"].firstMatch
+        XCTAssertTrue(
+            searchField.waitForExistence(timeout: 5),
+            "Command-F must present native PDF search without resizing the window"
+        )
+        XCTAssertTrue(searchField.isHittable)
+
+        searchField.typeText("rational")
+        searchField.typeKey(.return, modifierFlags: [])
+        XCTAssertTrue(
+            app.staticTexts["1 of 1"].waitForExistence(timeout: 5),
+            "Native search must expose a truthful result count"
+        )
     }
 
     private func element(_ identifier: String) -> XCUIElement {
@@ -119,6 +198,28 @@ final class MathPDFUITests: XCTestCase {
         if !app.wait(for: .notRunning, timeout: 5) {
             app.terminate()
         }
+    }
+
+    private func windowTitleContains(_ text: String) -> Bool {
+        (app.windows.firstMatch.title as String).contains(text)
+    }
+
+    private func waitForWindowTitle(toContain text: String, timeout: TimeInterval = 5) -> Bool {
+        let window = app.windows.firstMatch
+        let expectation = XCTNSPredicateExpectation(
+            predicate: NSPredicate(format: "title CONTAINS %@", text),
+            object: window
+        )
+        return XCTWaiter.wait(for: [expectation], timeout: timeout) == .completed
+    }
+
+    private func waitForWindowTitle(toExclude text: String, timeout: TimeInterval = 5) -> Bool {
+        let window = app.windows.firstMatch
+        let expectation = XCTNSPredicateExpectation(
+            predicate: NSPredicate(format: "NOT title CONTAINS %@", text),
+            object: window
+        )
+        return XCTWaiter.wait(for: [expectation], timeout: timeout) == .completed
     }
 
     private func showHighlightsAndNotes() {

@@ -10,7 +10,7 @@ Highlights and Notes (all highlights and annotation notes across the document)
 Annotation behavior:
 Works with highlights that have attached notes.
 Works with box-style note annotations.
-Highlights with attached notes display a small runtime comment badge beside the marked passage, so note discovery does not depend on the sidebar.
+Highlights with attached notes display a small runtime comment badge fixed beside the marked passage, so note discovery does not depend on the sidebar. The badge stays attached during scrolling and zooming; it does not float away or use a leader line.
 Clicking a comment badge, highlight, or note icon opens one page-attached note surface inside the document pane.
 Notes selected from the sidebar also open in context.
 When a PDF carries Preview-style popup companions for highlight notes, MathPDF treats the owning annotation's plain-text contents as authoritative and avoids duplicate in-app note UI. In memory it retains the companion and reciprocal edge in a separate persistence graph, while PDFKit's live page graph contains no Popup and the visible owner has no live `popup` pointer; MathPDF then renders its own affordance. On disk it preserves or creates a standards-valid reciprocal `/Popup` and `/Parent` relationship. Saving reparses and rejects output whose page, annotation, relationship, or metadata semantics changed unexpectedly.
@@ -42,13 +42,13 @@ Product contract:
 - The target is the user's research-PDF workflow: multiple document windows, outlines, search, stable page and zoom navigation, highlighting, box notes, rendered math notes, printing, and trustworthy saving.
 - Signature authoring, image editing, cropping, OCR, and comprehensive PDF-form authoring are outside this replacement target.
 - Clicking an annotation already visible in the PDF must never change the document's viewport. Sidebar navigation preserves scale and scrolls only as much as needed.
-- Note edits are undoable document mutations and use native atomic autosave, with Save As and Revert available. The note surface does not own a separate disk-save workflow.
+- Note edits are local plain-text drafts until commit. A committed note edit is one undoable document mutation and uses native atomic autosave, with Save As and Revert available. Ordinary typing Undo remains local to the editor; document Undo returns both the annotation and the window's Edited state to the saved baseline. The note surface does not own a separate disk-save workflow.
 - The sidebar uses a native list and a title dropdown rather than persistent tabs. Its modes are Table of Contents and Highlights and Notes; bare highlights remain discoverable through extracted source text. The PDF remains the dominant visual surface; preamble editing lives in an optional trailing inspector.
 - Notes use true native source-list selection, including keyboard selection behavior. A user selection navigates and opens the note; clicking the selected row can reopen a closed note surface. Selection synchronized from an on-page annotation click must not itself trigger a second navigation or alter the viewport.
 - Existing notes open for reading; only New Note or explicit Edit focuses the plain-text editor. Read and edit use the same page-attached surface, which stays inside the PDF pane, avoids the source highlight when space permits, and never opens the macros inspector. Sidebar rows remain concise and spatially stable.
 - An existing empty annotation still opens read-first with an explicit Add Note action. Deleting during an edit ends that edit transaction, so undoing deletion cannot leak an older text baseline into the next edit.
 - Highlight may mark a selection spanning pages. Highlight with Note requires a single-page selection and rejects a multi-page selection before creating anything, because one PDF note belongs to one owning highlight annotation.
-- The unified toolbar uses a document title/page subtitle, direct page entry, one grouped zoom control, and an always-visible native search field with contextual result navigation.
+- The unified toolbar uses a document title/page subtitle, direct page entry, one grouped zoom control, and native adaptive search with contextual result navigation. Search remains reachable and focusable through Command-F at realistic window widths even when macOS collapses its toolbar presentation.
 - Replacing a document clears any asynchronous search and selections owned by the previous document before the new reader state becomes active.
 - Per-document preambles intentionally support a small annotation-oriented subset: zero-argument aliases, simple parameterized commands, and math operators. Unsupported full-document TeX is ignored gracefully.
 - The preamble is stored as a versioned MathPDF marker inside standard PDF Keywords so unrelated metadata survives and non-MathPDF viewers still see ordinary PDF annotations.

@@ -54,30 +54,14 @@ struct ReaderToolbar: ToolbarContent {
             .imageScale(.large)
         }
 
-        ToolbarItem(placement: .primaryAction) {
+        ToolbarItemGroup(placement: .primaryAction) {
             Menu {
                 Button("Highlight with Note", systemImage: "bubble.left.and.text.bubble.right") {
                     onHighlightWithNote()
                 }
                 .disabled(!controller.readerProxy.selectionAvailable)
-
-                Button(
-                    controller.readerTool == .textNote ? "Cancel Note Placement" : "Place Note",
-                    systemImage: controller.readerTool == .textNote ? "xmark" : "note.text.badge.plus",
-                    action: onToggleTextNote
-                )
-
-                Divider()
-
-                Picker("Highlight Color", selection: $controller.highlightColor) {
-                    ForEach(AnnotationColorChoice.allCases) { color in
-                        Label(color.rawValue, systemImage: "circle.fill")
-                            .foregroundStyle(color.color)
-                            .tag(color)
-                    }
-                }
             } label: {
-                Label("Annotate", systemImage: "highlighter")
+                Label("Highlight", systemImage: "highlighter")
                     .foregroundStyle(controller.highlightColor.color)
             } primaryAction: {
                 guard controller.readerProxy.selectionAvailable else { return }
@@ -88,9 +72,44 @@ struct ReaderToolbar: ToolbarContent {
             .disabled(!controller.canAuthorAnnotations)
             .help(
                 controller.annotationAuthoringUnavailableReason
-                    ?? "Highlight text or add a note"
+                    ?? "Highlight Selected Text"
             )
             .accessibilityIdentifier("annotation-tools")
+
+            Menu {
+                ForEach(AnnotationColorChoice.allCases) { color in
+                    Button {
+                        controller.highlightColor = color
+                    } label: {
+                        Label(color.rawValue, systemImage: "circle.fill")
+                    }
+                }
+            } label: {
+                Label("Highlight Color", systemImage: "circle.fill")
+                    .labelStyle(.iconOnly)
+                    .foregroundStyle(controller.highlightColor.color)
+            }
+            .controlSize(.large)
+            .help("Highlight Color: \(controller.highlightColor.rawValue)")
+            .accessibilityLabel("Highlight Color")
+            .accessibilityValue(controller.highlightColor.rawValue)
+            .accessibilityIdentifier("highlight-color-menu")
+            .disabled(!controller.canAuthorAnnotations)
+
+            Button(action: onToggleTextNote) {
+                Label(
+                    controller.readerTool == .textNote ? "Click PDF to Place Note" : "Place Note",
+                    systemImage: controller.readerTool == .textNote
+                        ? "xmark.circle.fill"
+                        : "note.text.badge.plus"
+                )
+                .foregroundStyle(controller.readerTool == .textNote ? Color.accentColor : Color.primary)
+            }
+            .controlSize(.large)
+            .help(controller.readerTool == .textNote ? "Cancel Note Placement" : "Place Note")
+            .accessibilityValue(controller.readerTool == .textNote ? "Active" : "Inactive")
+            .accessibilityIdentifier("place-note")
+            .disabled(!controller.canAuthorAnnotations)
         }
 
         ToolbarItem(placement: .primaryAction) {
@@ -136,10 +155,11 @@ private struct PagePositionControl: View {
 private struct ReaderSearchToolbar: View {
     @ObservedObject var controller: ReaderDocumentController
 
+    @ViewBuilder
     var body: some View {
-        HStack(spacing: 6) {
+        if let searchStatus {
             HStack(spacing: 3) {
-                Text(searchStatus ?? "")
+                Text(searchStatus)
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .monospacedDigit()
@@ -147,21 +167,14 @@ private struct ReaderSearchToolbar: View {
 
                 Button("Previous Search Result", systemImage: "chevron.up", action: controller.readerProxy.findPrevious)
                     .labelStyle(.iconOnly)
-                    .disabled(searchStatus == nil || controller.readerProxy.searchResultCount == 0)
+                    .disabled(controller.readerProxy.searchResultCount == 0)
 
                 Button("Next Search Result", systemImage: "chevron.down", action: controller.readerProxy.findNext)
                     .labelStyle(.iconOnly)
-                    .disabled(searchStatus == nil || controller.readerProxy.searchResultCount == 0)
+                    .disabled(controller.readerProxy.searchResultCount == 0)
             }
             .frame(width: 82)
-            .opacity(searchStatus == nil ? 0 : 1)
-            .allowsHitTesting(searchStatus != nil)
-
-            NativeSearchField(text: $controller.searchText, onSubmit: controller.search)
-                .frame(width: 176, height: 28)
-                .accessibilityIdentifier("document-search")
         }
-        .controlSize(.regular)
     }
 
     private var searchStatusIsCurrent: Bool {

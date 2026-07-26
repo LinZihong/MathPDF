@@ -93,6 +93,15 @@ primary agent revised that omission itself; the second check passed. This is a
 useful rejection: it improved safety without steering the reviewer's taste or
 turning the gatekeeper into a ghostwriter.
 
+The last focused audit supplied another useful example. One gatekeeper rejected
+the candidate because its PASS rule allowed a named contract to remain
+unexercised; a second rejected it because “do not inspect project files” did not
+explicitly prohibit modifying them. The primary agent corrected each omission
+in its own words. A fresh third gatekeeper then accepted the exact prompt that
+was sent unchanged to the reviewer. Multiple terse rejections were more useful
+than one unsolicited rewrite because they preserved authorship while exposing
+distinct holes in the contract.
+
 ## Use decisive acceptance language
 
 The final reviewer returns SHIP or NO-SHIP and only the few observations that
@@ -172,6 +181,48 @@ detail, judge only the new evidence, and neither inherit the old verdict nor
 reduce the task to Preview pixel matching. The fresh result was `VISUAL PASS`.
 This was a productive no-pass/pass loop: the standard stayed stable while the
 evidence changed.
+
+### A natural-use brief exposed trust and toolbar-adaptation failures
+
+After Computer Use became available only in a separate user-visible main task,
+the reviewer was asked to behave as a daily-use macOS PDF reader expert and to
+discover the product naturally. The prompt did not mention dirty-state or
+adaptive-toolbar suspicions. The first interactive review independently found
+that undo could restore every visible annotation while the real window still
+claimed `Edited`; the next build independently exposed that Find disappeared at
+the default window width. Those were release-blocking truths, not aesthetic
+preferences. Focused follow-ups then proved the corrected contracts with the
+exact shortcut syntax `key:"super+z"` and `key:"super+f"`.
+
+The operational lesson is that an auditor should launch the exact signed app
+and use the same document scene a person uses. When delegated Computer Use
+approval was invisible in ordinary subagents, repeatedly retrying those hidden
+workers produced no product evidence. Reusing a separate visible main task as
+the independent reviewer preserved human-style interaction and made permission
+state observable without weakening reviewer independence.
+
+### Verbatim focused post-audit contract
+
+> PASS only if every named contract is exercised and passes. A product defect
+> is NO-PASS. An evidence/tool limitation that prevents exercising any contract
+> is UNVERIFIED, never PASS. Do not infer success from code or earlier reports.
+
+That sentence followed two check-only rejections and prevented a plausible but
+invalid PASS based on exercising only the easiest subset. The complete prompt
+also named the exact signed executable and in-memory fixture, prohibited both
+inspection and modification of project files, separated the 30-second launch
+gate from a three-minute session bound, limited recovery to one retry, and
+required exact-process cleanup.
+
+The same focused contract also showed why a prior holistic PASS must not end
+adversarial review of newly changed trust paths. Successive fresh runs proved
+editor-local Undo, exposed duplicate committed-note change accounting, exposed
+the opposite undercount after that duplicate was removed, and finally isolated
+the same missing dirty-state ownership in Math Macros. Each NO-PASS described
+the exact current candidate instead of being averaged with earlier good
+evidence. The prompt named user-visible state transitions and required exact
+before/after evidence without telling the reviewer which implementation
+variable to blame.
 
 ### A semantic ownership brief exposed a hidden PDFKit presentation path
 

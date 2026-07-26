@@ -1,3 +1,4 @@
+import AppKit
 import Combine
 import PDFKit
 import SwiftUI
@@ -18,16 +19,16 @@ final class AnnotationNoteEditingSession: ObservableObject {
     @Published private(set) var surfaceColor: NSColor
 
     private var transactionBaseline: String?
-    private let onLiveUpdate: (String) -> Bool
-    private let onCommit: (String) -> Void
+    private let onCommit: (String, String) -> Bool
+    private let onDraftPendingChanged: (_ isPending: Bool, _ committed: Bool) -> Void
     private let onEditingChanged: (Bool) -> Void
 
     init(
         contents: String,
         color: NSColor,
         startsEditing: Bool,
-        onLiveUpdate: @escaping (String) -> Bool,
-        onCommit: @escaping (String) -> Void,
+        onCommit: @escaping (String, String) -> Bool,
+        onDraftPendingChanged: @escaping (_ isPending: Bool, _ committed: Bool) -> Void,
         onEditingChanged: @escaping (Bool) -> Void
     ) {
         draft = contents
@@ -35,14 +36,18 @@ final class AnnotationNoteEditingSession: ObservableObject {
         selectedColor = AnnotationColorChoice.matching(color)
         surfaceColor = color
         transactionBaseline = startsEditing ? contents : nil
-        self.onLiveUpdate = onLiveUpdate
         self.onCommit = onCommit
+        self.onDraftPendingChanged = onDraftPendingChanged
         self.onEditingChanged = onEditingChanged
     }
 
     func replaceDraft(with contents: String) {
-        guard contents != draft, onLiveUpdate(contents) else { return }
+        guard contents != draft else { return }
+        let wasPending = hasPendingDraft
         draft = contents
+        if hasPendingDraft != wasPending {
+            onDraftPendingChanged(hasPendingDraft, false)
+        }
     }
 
     func acceptColorChange(_ color: AnnotationColorChoice) {
@@ -50,15 +55,21 @@ final class AnnotationNoteEditingSession: ObservableObject {
         surfaceColor = color.nsColor
     }
 
-    /// Undo and other document-side mutations are authoritative while the
-    /// surface remains open. Rebase an active edit transaction so finishing
-    /// the edit cannot replay a stale pre-Undo baseline.
+    /// Keep a local draft intact across unrelated presentation refreshes. If
+    /// the model itself changed while a draft is pending, rebase the eventual
+    /// commit on that new model value rather than silently discarding typing.
     func reconcileDocumentState(contents: String, color: NSColor) {
-        if draft != contents {
+        let wasPending = hasPendingDraft
+        if isEditing {
+            if !wasPending, draft != contents {
+                draft = contents
+            }
+            transactionBaseline = contents
+        } else if draft != contents {
             draft = contents
         }
-        if isEditing {
-            transactionBaseline = contents
+        if hasPendingDraft != wasPending {
+            onDraftPendingChanged(hasPendingDraft, false)
         }
         let matchedColor = AnnotationColorChoice.matching(color)
         if selectedColor != matchedColor {
@@ -78,17 +89,42 @@ final class AnnotationNoteEditingSession: ObservableObject {
 
     func finishEditing() {
         guard isEditing else { return }
-        commitIfNeeded()
+        guard commitIfNeeded(continuingEditing: false) else { return }
         isEditing = false
         onEditingChanged(false)
     }
 
-    func commitIfNeeded() {
-        guard let transactionBaseline else { return }
-        if transactionBaseline != draft {
-            onCommit(transactionBaseline)
+    @discardableResult
+    func commitIfNeeded(continuingEditing: Bool = false) -> Bool {
+        guard let transactionBaseline else { return true }
+        let wasPending = transactionBaseline != draft
+        if wasPending {
+            onDraftPendingChanged(false, false)
+            guard onCommit(transactionBaseline, draft) else {
+                onDraftPendingChanged(true, false)
+                return false
+            }
         }
-        self.transactionBaseline = nil
+        self.transactionBaseline = continuingEditing && isEditing ? draft : nil
+        return true
+    }
+
+    func discardPendingChanges() {
+        let wasPending = hasPendingDraft
+        if let transactionBaseline {
+            draft = transactionBaseline
+        }
+        transactionBaseline = nil
+        isEditing = false
+        if wasPending {
+            onDraftPendingChanged(false, false)
+        }
+        onEditingChanged(false)
+    }
+
+    private var hasPendingDraft: Bool {
+        guard let transactionBaseline else { return false }
+        return draft != transactionBaseline
     }
 }
 
@@ -112,13 +148,21 @@ struct AnnotationNoteSurface: View {
             Divider()
             footer
         }
-        .background(.regularMaterial, in: .rect(cornerRadius: 12))
-        .clipShape(.rect(cornerRadius: 12))
-        .overlay {
-            RoundedRectangle(cornerRadius: 12)
-                .strokeBorder(Color(nsColor: .separatorColor).opacity(0.72), lineWidth: 0.5)
+        .background {
+            ZStack {
+                Color(nsColor: .windowBackgroundColor)
+                Color(nsColor: editingSession.surfaceColor).opacity(0.10)
+            }
         }
-        .shadow(color: .black.opacity(0.12), radius: 9, y: 3)
+        .clipShape(.rect(cornerRadius: 9))
+        .overlay {
+            RoundedRectangle(cornerRadius: 9)
+                .strokeBorder(
+                    Color(nsColor: editingSession.surfaceColor).opacity(0.72),
+                    lineWidth: 0.8
+                )
+        }
+        .shadow(color: .black.opacity(0.10), radius: 7, y: 2)
         .accessibilityElement(children: .contain)
         .accessibilityLabel("Note on page \(note.pageIndex + 1)")
         .accessibilityIdentifier("annotation-note-surface")
@@ -139,8 +183,8 @@ struct AnnotationNoteSurface: View {
                 .overlay(Circle().stroke(.white.opacity(0.75), lineWidth: 1))
                 .accessibilityHidden(true)
 
-            Text(note.annotationType == "Highlight" ? "Highlight Note" : "Note")
-                .font(.headline)
+            Text("Note")
+                .font(.subheadline.weight(.semibold))
                 .lineLimit(1)
                 .fixedSize(horizontal: true, vertical: false)
 
@@ -156,40 +200,14 @@ struct AnnotationNoteSurface: View {
 
             noteActionsMenu
 
-            Button("Close Note", systemImage: "xmark", action: close)
-                .labelStyle(.iconOnly)
-                .buttonStyle(.plain)
-                .frame(width: 28, height: 28)
-                .help("Close Note")
         }
         .padding(.horizontal, 12)
-        .frame(height: 40)
-        .background(Color(nsColor: editingSession.surfaceColor).opacity(0.06))
+        .frame(height: 36)
+        .background(Color(nsColor: editingSession.surfaceColor).opacity(0.05))
     }
 
     private var noteActionsMenu: some View {
         Menu {
-            if note.annotationType == "Highlight" {
-                Section("Highlight Color") {
-                    ForEach(AnnotationColorChoice.allCases) { color in
-                        Button {
-                            changeColor(to: color)
-                        } label: {
-                            Label(
-                                color.rawValue,
-                                systemImage: editingSession.selectedColor == color
-                                    ? "checkmark.circle.fill"
-                                    : "circle.fill"
-                            )
-                        }
-                        .disabled(!capabilities.canChangeColor)
-                        .accessibilityIdentifier("note-color-\(color.rawValue.lowercased())")
-                    }
-                }
-            }
-
-            Divider()
-
             Button(deleteTitle, systemImage: "trash", role: .destructive, action: onDelete)
                 .disabled(!capabilities.canDelete)
         } label: {
@@ -202,22 +220,23 @@ struct AnnotationNoteSurface: View {
         .frame(width: 28, height: 28)
         .help("Note Actions")
         .accessibilityLabel("Note Actions")
-        .accessibilityValue(editingSession.selectedColor?.rawValue ?? "Custom")
         .accessibilityIdentifier("note-actions")
     }
 
     @ViewBuilder
     private var content: some View {
         if editingSession.isEditing {
-            TextEditor(text: Binding(
-                get: { editingSession.draft },
-                set: editingSession.replaceDraft(with:)
-            ))
-            .font(.body.monospaced())
-            .scrollContentBackground(.hidden)
-            .scrollIndicators(.hidden)
+            IsolatedUndoTextEditor(
+                text: Binding(
+                    get: { editingSession.draft },
+                    set: editingSession.replaceDraft(with:)
+                ),
+                isFocused: Binding(
+                    get: { editorFocused },
+                    set: { editorFocused = $0 }
+                )
+            )
             .padding(10)
-            .focused($editorFocused)
             .accessibilityIdentifier("note-editor")
         } else {
             ScrollView(.vertical, showsIndicators: false) {
@@ -236,6 +255,10 @@ struct AnnotationNoteSurface: View {
 
     private var footer: some View {
         HStack(spacing: 8) {
+            if note.annotationType == "Highlight" {
+                colorPalette
+            }
+
             Spacer()
 
             if editingSession.isEditing {
@@ -251,10 +274,48 @@ struct AnnotationNoteSurface: View {
                     .foregroundStyle(.secondary)
                     .help(capabilities.editingUnavailableReason ?? "This annotation is read only.")
             }
+
+            Button("Close", action: close)
+                .accessibilityLabel("Close Note")
         }
         .padding(.horizontal, 12)
-        .frame(height: 40)
-        .background(Color(nsColor: .controlBackgroundColor).opacity(0.16))
+        .frame(height: 42)
+        .background(Color(nsColor: editingSession.surfaceColor).opacity(0.04))
+    }
+
+    private var colorPalette: some View {
+        HStack(spacing: 7) {
+            ForEach(AnnotationColorChoice.allCases) { color in
+                Button {
+                    changeColor(to: color)
+                } label: {
+                    Circle()
+                        .fill(color.color)
+                        .frame(width: 16, height: 16)
+                        .padding(3)
+                        .overlay {
+                            Circle()
+                                .strokeBorder(
+                                    editingSession.selectedColor == color
+                                        ? Color.primary.opacity(0.72)
+                                        : Color.clear,
+                                    lineWidth: 1.5
+                                )
+                        }
+                        .contentShape(.circle)
+                }
+                .buttonStyle(.plain)
+                .disabled(!capabilities.canChangeColor)
+                .help(color.rawValue)
+                .accessibilityLabel(color.rawValue)
+                .accessibilityValue(
+                    editingSession.selectedColor == color ? "Selected" : ""
+                )
+                .accessibilityIdentifier("note-color-\(color.rawValue.lowercased())")
+            }
+        }
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("Highlight Color")
     }
 
     private func changeColor(to color: AnnotationColorChoice) {
@@ -284,5 +345,142 @@ struct AnnotationNoteSurface: View {
         editingSession.draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
             ? "Add Note"
             : "Edit"
+    }
+}
+
+/// An annotation draft is an editor transaction, not a sequence of persistent
+/// document mutations. Giving the native text view its own undo manager keeps
+/// ordinary typing undo local while the document undo manager receives the
+/// single committed annotation mutation.
+private struct IsolatedUndoTextEditor: NSViewRepresentable {
+    @Binding var text: String
+    @Binding var isFocused: Bool
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator(text: $text, isFocused: $isFocused)
+    }
+
+    func makeNSView(context: Context) -> NSScrollView {
+        let scrollView = NSScrollView()
+        scrollView.drawsBackground = false
+        scrollView.borderType = .noBorder
+        scrollView.hasVerticalScroller = false
+        scrollView.autohidesScrollers = true
+
+        let textView = IsolatedUndoTextView()
+        textView.delegate = context.coordinator
+        textView.string = text
+        textView.font = .monospacedSystemFont(
+            ofSize: NSFont.systemFontSize,
+            weight: .regular
+        )
+        textView.textColor = .labelColor
+        textView.drawsBackground = false
+        textView.isRichText = false
+        textView.allowsUndo = true
+        textView.importsGraphics = false
+        textView.isAutomaticQuoteSubstitutionEnabled = false
+        textView.isAutomaticDashSubstitutionEnabled = false
+        textView.isAutomaticTextReplacementEnabled = false
+        textView.isVerticallyResizable = true
+        textView.isHorizontallyResizable = false
+        textView.autoresizingMask = [.width]
+        textView.textContainerInset = NSSize(width: 3, height: 4)
+        textView.textContainer?.widthTracksTextView = true
+        textView.textContainer?.containerSize = NSSize(
+            width: 0,
+            height: CGFloat.greatestFiniteMagnitude
+        )
+        textView.setAccessibilityIdentifier("note-editor")
+        scrollView.documentView = textView
+        context.coordinator.textView = textView
+        return scrollView
+    }
+
+    func updateNSView(_ scrollView: NSScrollView, context: Context) {
+        context.coordinator.text = $text
+        context.coordinator.isFocused = $isFocused
+        guard let textView = scrollView.documentView as? IsolatedUndoTextView else { return }
+
+        if textView.string != text {
+            context.coordinator.isUpdatingProgrammatically = true
+            textView.string = text
+            textView.isolatedUndoManager.removeAllActions()
+            context.coordinator.isUpdatingProgrammatically = false
+        }
+
+        if isFocused, textView.window?.firstResponder !== textView {
+            DispatchQueue.main.async { [weak textView] in
+                guard let textView else { return }
+                textView.window?.makeFirstResponder(textView)
+            }
+        }
+    }
+
+    static func dismantleNSView(_ scrollView: NSScrollView, coordinator: Coordinator) {
+        (scrollView.documentView as? NSTextView)?.delegate = nil
+        coordinator.textView = nil
+    }
+
+    final class Coordinator: NSObject, NSTextViewDelegate {
+        var text: Binding<String>
+        var isFocused: Binding<Bool>
+        weak var textView: NSTextView?
+        var isUpdatingProgrammatically = false
+
+        init(text: Binding<String>, isFocused: Binding<Bool>) {
+            self.text = text
+            self.isFocused = isFocused
+        }
+
+        func textDidBeginEditing(_ notification: Notification) {
+            isFocused.wrappedValue = true
+        }
+
+        func textDidChange(_ notification: Notification) {
+            guard !isUpdatingProgrammatically,
+                  let textView = notification.object as? NSTextView else { return }
+            text.wrappedValue = textView.string
+        }
+
+        func textDidEndEditing(_ notification: Notification) {
+            isFocused.wrappedValue = false
+        }
+    }
+}
+
+private final class IsolatedUndoTextView: NSTextView {
+    let isolatedUndoManager = UndoManager()
+
+    override var undoManager: UndoManager? {
+        isolatedUndoManager
+    }
+
+    @IBAction func undo(_ sender: Any?) {
+        isolatedUndoManager.undo()
+    }
+
+    @IBAction func redo(_ sender: Any?) {
+        isolatedUndoManager.redo()
+    }
+
+    override func performKeyEquivalent(with event: NSEvent) -> Bool {
+        let modifiers = event.modifierFlags.intersection([
+            .command, .shift, .option, .control
+        ])
+        guard window?.firstResponder === self,
+              event.charactersIgnoringModifiers?.lowercased() == "z" else {
+            return super.performKeyEquivalent(with: event)
+        }
+
+        if modifiers == [.command] {
+            isolatedUndoManager.undo()
+            return true
+        }
+        if modifiers == [.command, .shift] {
+            isolatedUndoManager.redo()
+            return true
+        }
+        return super.performKeyEquivalent(with: event)
     }
 }

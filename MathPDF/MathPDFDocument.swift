@@ -19,8 +19,12 @@ final class MathPDFDocument: ReferenceFileDocument, ObservableObject {
             guard preamble != oldValue else { return }
             applyPreambleMetadata()
             markSerializationDirty()
+            preambleChanges.send()
         }
     }
+
+    let annotationChanges = PassthroughSubject<Int, Never>()
+    let preambleChanges = PassthroughSubject<Void, Never>()
 
     private var originalData: Data
     private var serializationRevision = 0
@@ -146,6 +150,16 @@ final class MathPDFDocument: ReferenceFileDocument, ObservableObject {
         try snapshot(contentType: .pdf)
     }
 
+    /// SwiftUI's native TextEditor already registers text changes with the
+    /// focused document window's undo manager. Updating the model here must not
+    /// add a second, competing undo operation for the same keystroke.
+    @discardableResult
+    func updatePreambleFromEditor(to value: String) -> Bool {
+        guard preamble != value else { return false }
+        preamble = value
+        return true
+    }
+
 #if DEBUG
     private static func uiTestDocumentIfRequested(
         environment: [String: String] = ProcessInfo.processInfo.environment,
@@ -236,7 +250,6 @@ final class MathPDFDocument: ReferenceFileDocument, ObservableObject {
         }
         undoManager?.setActionName("Edit Note")
 
-        objectWillChange.send()
         annotation.contents = contents
         annotation.modificationDate = Date()
         annotation.removeValue(forAnnotationKey: PDFAnnotationKey(rawValue: "/RC"))
@@ -262,7 +275,6 @@ final class MathPDFDocument: ReferenceFileDocument, ObservableObject {
             activeNoteEditStates[identifier] = noteEditState(for: annotation)
         }
 
-        objectWillChange.send()
         annotation.contents = contents
         annotation.modificationDate = Date()
         annotation.removeValue(forAnnotationKey: PDFAnnotationKey(rawValue: "/RC"))
@@ -317,7 +329,6 @@ final class MathPDFDocument: ReferenceFileDocument, ObservableObject {
         annotation.contents = ""
         annotation.modificationDate = Date()
 
-        objectWillChange.send()
         page.addAnnotation(annotation)
         let pageIndex = pdfDocument.index(for: page)
         persistenceSession.registerCreated(annotation, pageIndex: pageIndex)
@@ -399,7 +410,6 @@ final class MathPDFDocument: ReferenceFileDocument, ObservableObject {
         }
 
         guard let first = created.first else { return nil }
-        objectWillChange.send()
         recordAnnotationMutation()
 
         undoManager?.registerUndo(withTarget: self) { document in
@@ -430,7 +440,6 @@ final class MathPDFDocument: ReferenceFileDocument, ObservableObject {
         }
         guard states.count == annotations.count else { return }
 
-        objectWillChange.send()
         for state in states {
             activeNoteEditStates.removeValue(forKey: ObjectIdentifier(state.annotation))
             if let popup = state.popup {
@@ -457,7 +466,6 @@ final class MathPDFDocument: ReferenceFileDocument, ObservableObject {
         undoManager: UndoManager?,
         actionName: String
     ) {
-        objectWillChange.send()
         for state in states {
             state.page.addAnnotation(state.annotation)
             persistenceSession.markRestored(state.annotation)
@@ -489,7 +497,6 @@ final class MathPDFDocument: ReferenceFileDocument, ObservableObject {
         // active, its old baseline must not leak through delete/undo into the
         // next editing transaction on this restored annotation.
         activeNoteEditStates.removeValue(forKey: ObjectIdentifier(annotation))
-        objectWillChange.send()
         let attachedPopup = persistenceSession.popupCompanion(for: annotation)
         let popupDiskState = attachedPopup.flatMap { popupDiskStates[ObjectIdentifier($0)] }
         let popup = attachedPopup
@@ -522,7 +529,6 @@ final class MathPDFDocument: ReferenceFileDocument, ObservableObject {
         to page: PDFPage,
         undoManager: UndoManager?
     ) {
-        objectWillChange.send()
         page.addAnnotation(annotation)
         persistenceSession.markRestored(annotation)
         if let popup {
@@ -586,7 +592,6 @@ final class MathPDFDocument: ReferenceFileDocument, ObservableObject {
         }
         undoManager?.setActionName("Change Highlight Color")
 
-        objectWillChange.send()
         annotation.color = state.ownerColor
         annotation.removeValue(forAnnotationKey: .appearanceDictionary)
         annotation.modificationDate = Date()
@@ -684,7 +689,6 @@ final class MathPDFDocument: ReferenceFileDocument, ObservableObject {
         }
         undoManager?.setActionName("Edit Note")
 
-        objectWillChange.send()
         restorePopupTopology(state, of: annotation)
         annotation.contents = state.contents
         annotation.modificationDate = state.modificationDate
@@ -761,6 +765,7 @@ final class MathPDFDocument: ReferenceFileDocument, ObservableObject {
     private func recordAnnotationMutation() {
         annotationRevision &+= 1
         markSerializationDirty()
+        annotationChanges.send(annotationRevision)
     }
 
     private func markSerializationDirty() {
